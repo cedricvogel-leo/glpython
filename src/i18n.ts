@@ -1,5 +1,10 @@
 export type Locale = 'en' | 'de'
 
+export const localeNames: Record<Locale, string> = {
+  en: 'English',
+  de: 'Deutsch',
+}
+
 export type Translation = {
   workspaceName: string
   openProject: string
@@ -106,7 +111,7 @@ export const translations: Record<Locale, Translation> = {
     footerTagline: 'glpython preview · built for learning',
     devTools: 'Development tools',
     clearLocalProject: 'Clear local project',
-    language: 'Deutsch',
+    language: 'Language',
     readyOutput: 'Ready when you are. Run your code to see what it does.',
     pythonReadyOutput: 'Python is ready. Run your code to see what it does.',
     noOutput: '(No output)',
@@ -168,7 +173,7 @@ export const translations: Record<Locale, Translation> = {
     footerTagline: 'glpython-Vorschau · zum Lernen entwickelt',
     devTools: 'Entwicklerwerkzeuge',
     clearLocalProject: 'Lokales Projekt löschen',
-    language: 'English',
+    language: 'Sprache',
     readyOutput: 'Bereit, wenn du es bist. Führe deinen Code aus, um zu sehen, was er tut.',
     pythonReadyOutput: 'Python ist bereit. Führe deinen Code aus, um zu sehen, was er tut.',
     noOutput: '(Keine Ausgabe)',
