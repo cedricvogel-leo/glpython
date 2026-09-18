@@ -20,6 +20,8 @@ export type Translation = {
   expandGraphics: string
   courseCategory: string
   courseMenu: string
+  renameProject: string
+  promptRenameProject: string
   lessonProgress: string
   projectFiles: string
   addFile: string
@@ -89,6 +91,8 @@ export const translations: Record<Locale, Translation> = {
     expandGraphics: 'Expand graphics window',
     courseCategory: 'INTRO TO PYTHON',
     courseMenu: 'Course menu',
+    renameProject: 'Rename project',
+    promptRenameProject: 'Project name',
     lessonProgress: 'Lesson 01 of 08',
     projectFiles: 'PROJECT FILES',
     addFile: 'Add file',
@@ -156,6 +160,8 @@ export const translations: Record<Locale, Translation> = {
     expandGraphics: 'Grafikfenster ausklappen',
     courseCategory: 'EINFÜHRUNG IN PYTHON',
     courseMenu: 'Kursmenü',
+    renameProject: 'Projekt umbenennen',
+    promptRenameProject: 'Projektname',
     lessonProgress: 'Lektion 01 von 08',
     projectFiles: 'PROJEKTDATEIEN',
     addFile: 'Datei hinzufügen',
