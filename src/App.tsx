@@ -1,24 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 import Editor from '@monaco-editor/react'
-import { BookOpen, ChevronDown, Cloud, Download, FileCode2, FolderOpen, GraduationCap, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Plus, RotateCcw, Save, Settings2, Sparkles, SquareTerminal, Trash2, Upload, UserRound, X } from 'lucide-react'
+import { BookOpen, ChevronDown, Cloud, Download, FileCode2, FolderOpen, GraduationCap, Languages, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Plus, RotateCcw, Save, Settings2, Sparkles, SquareTerminal, Trash2, Upload, UserRound, X } from 'lucide-react'
 import { addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from './project'
 import type { ProjectFileKind } from './project'
 import { initializeAuth, isAuthConfigured, signIn, signOut } from './auth'
 import type { AccountInfo } from '@azure/msal-browser'
 import { clearLocalProject, exportProjectZip, importProjectFolder, importProjectZip, loadLocalProject, saveLocalProject } from './projectStorage'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
+import { detectLocale, saveLocale, translations, type Locale } from './i18n'
 import './App.css'
 
 function App() {
+  const [locale, setLocale] = useState<Locale>(() => detectLocale())
+  const t = translations[locale]
   const [project, setProject] = useState(() => loadLocalProject(initialProject))
   const [activeFile, setActiveFile] = useState(() => loadLocalProject(initialProject).mainFile)
   const [openFiles, setOpenFiles] = useState(() => [loadLocalProject(initialProject).mainFile])
-  const [output, setOutput] = useState('Ready when you are. Run your code to see what it does.')
+  const [output, setOutput] = useState(() => translations[detectLocale()].readyOutput)
   const [graphics, setGraphics] = useState<TurtleCommand[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [isSaved, setIsSaved] = useState(true)
   const [account, setAccount] = useState<AccountInfo | null>(null)
-  const [authError, setAuthError] = useState('')
+  const [authErrorKey, setAuthErrorKey] = useState<'' | 'init' | 'config' | 'cancelled'>('')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [isGraphicsOpen, setIsGraphicsOpen] = useState(true)
   const workerRef = useRef<Worker | null>(null)
@@ -30,13 +33,19 @@ function App() {
   }, [project])
 
   useEffect(() => {
-    initializeAuth().then(setAccount).catch(() => setAuthError('Microsoft sign-in could not be initialized.'))
+    saveLocale(locale)
+  }, [locale])
+
+  useEffect(() => {
+    initializeAuth().then(setAccount).catch(() => setAuthErrorKey('init'))
   }, [])
 
+  const toggleLocale = () => setLocale((currentLocale) => currentLocale === 'en' ? 'de' : 'en')
+
   const handleAuthClick = async () => {
-    setAuthError('')
+    setAuthErrorKey('')
     if (!isAuthConfigured) {
-      setAuthError('Add VITE_ENTRA_CLIENT_ID to .env.local to enable Microsoft sign-in.')
+      setAuthErrorKey('config')
       return
     }
     try {
@@ -47,7 +56,7 @@ function App() {
         setAccount(await signIn())
       }
     } catch {
-      setAuthError('Microsoft sign-in was cancelled or failed.')
+      setAuthErrorKey('cancelled')
     }
   }
 
@@ -65,7 +74,7 @@ function App() {
   }
 
   const addFile = () => {
-    const requestedPath = window.prompt('File name', 'exercise.py')?.trim()
+    const requestedPath = window.prompt(t.promptFileName, t.promptDefaultFileName)?.trim()
     if (!requestedPath || project.files[requestedPath]) return
     const kind: ProjectFileKind = requestedPath.endsWith('.py') ? 'python' : 'text'
     const newFile = { path: requestedPath, label: requestedPath.replace(/\.[^/.]+$/, ''), kind, code: kind === 'python' ? '# Start writing Python here\n' : '' }
@@ -75,7 +84,7 @@ function App() {
   }
 
   const renameFile = (path: string) => {
-    const requestedPath = window.prompt('Rename file', path)?.trim()
+    const requestedPath = window.prompt(t.promptRenameFile, path)?.trim()
     if (!requestedPath || requestedPath === path || project.files[requestedPath]) return
     setProject((currentProject) => renameProjectFile(currentProject, path, requestedPath))
     setOpenFiles((currentFiles) => currentFiles.map((openPath) => openPath === path ? requestedPath : openPath))
@@ -84,7 +93,7 @@ function App() {
   }
 
   const deleteFile = (path: string) => {
-    if (Object.keys(project.files).length === 1 || !window.confirm(`Delete ${path}?`)) return
+    if (Object.keys(project.files).length === 1 || !window.confirm(t.confirmDeleteFile(path))) return
     const remainingPaths = Object.keys(project.files).filter((filePath) => filePath !== path)
     const nextActiveFile = activeFile === path ? remainingPaths[0] : activeFile
     setProject((currentProject) => deleteProjectFile(currentProject, path))
@@ -96,11 +105,15 @@ function App() {
     setIsSaved(false)
   }
 
+  const localeRef = useRef(locale)
+  localeRef.current = locale
+
   useEffect(() => {
     const worker = new Worker('/pyodide-worker.js')
     worker.onmessage = (event: MessageEvent<{ type: string; output?: string; graphics?: TurtleCommand[] }>) => {
-      if (event.data.type === 'ready') setOutput('Python is ready. Run your code to see what it does.')
-      if (event.data.type === 'result' || event.data.type === 'error') { setOutput(event.data.output || '(No output)'); setGraphics(event.data.graphics ?? []); setIsRunning(false) }
+      const currentTranslation = translations[localeRef.current]
+      if (event.data.type === 'ready') setOutput(currentTranslation.pythonReadyOutput)
+      if (event.data.type === 'result' || event.data.type === 'error') { setOutput(event.data.output || currentTranslation.noOutput); setGraphics(event.data.graphics ?? []); setIsRunning(false) }
     }
     workerRef.current = worker
     return () => worker.terminate()
@@ -112,7 +125,7 @@ function App() {
   }
   const runCode = () => {
     if (!workerRef.current) return
-    setIsRunning(true); setOutput(`Running ${project.mainFile} and its project files...`)
+    setIsRunning(true); setOutput(t.runningOutput(project.mainFile))
     workerRef.current.postMessage({
       type: 'run',
       project: {
@@ -121,7 +134,7 @@ function App() {
       },
     })
   }
-  const saveFile = () => { setIsSaved(true); setOutput(`Saved ${selectedFile.path} to your workspace. OneDrive sync is ready to connect.`) }
+  const saveFile = () => { setIsSaved(true); setOutput(t.savedOutput(selectedFile.path)) }
 
   const downloadProject = async () => {
     const blob = await exportProjectZip(project)
@@ -131,7 +144,7 @@ function App() {
     link.download = `${project.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase()}.zip`
     link.click()
     URL.revokeObjectURL(url)
-    setOutput(`Downloaded ${project.name} as a ZIP project folder.`)
+    setOutput(t.downloadedOutput(project.name))
   }
 
   const openFolder = async () => {
@@ -145,9 +158,9 @@ function App() {
       setActiveFile(importedProject.mainFile)
       setOpenFiles([importedProject.mainFile])
       setIsSaved(true)
-      setOutput(`Opened ${importedProject.name} from a local folder.`)
+      setOutput(t.openedFolderOutput(importedProject.name))
     } catch {
-      setOutput('The folder was not opened.')
+      setOutput(t.folderNotOpened)
     }
   }
 
@@ -158,25 +171,28 @@ function App() {
       setActiveFile(importedProject.mainFile)
       setOpenFiles([importedProject.mainFile])
       setIsSaved(true)
-      setOutput(`Opened ${importedProject.name} from a ZIP project folder.`)
+      setOutput(t.openedZipOutput(importedProject.name))
     } catch {
-      setOutput('That ZIP file could not be opened as a project.')
+      setOutput(t.zipNotOpened)
     }
   }
 
+
   const resetLocalProject = () => {
-    if (!window.confirm('Clear the saved local project and reload the starter?')) return
+    if (!window.confirm(t.confirmClearProject)) return
     clearLocalProject()
     window.location.reload()
   }
 
+  const authErrorMessage = authErrorKey === 'init' ? t.authInitError : authErrorKey === 'config' ? t.authConfigError : authErrorKey === 'cancelled' ? t.authCancelledError : ''
+
   return (
     <div className="app-shell">
-      <header className="topbar"><div className="brand"><button className="icon-button" aria-label={isSidebarOpen ? 'Collapse files sidebar' : 'Expand files sidebar'} onClick={() => setIsSidebarOpen((open) => !open)}>{isSidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button><div className="brand-mark"><Sparkles size={17} /></div><span>glpython</span><span className="brand-divider">/</span><span className="workspace-name">Classroom workspace</span></div><div className="topbar-actions"><details className="project-menu"><summary className="workspace-button"><FolderOpen size={15} /><span>Open project</span><ChevronDown size={13} /></summary><div className="project-menu-options"><button onClick={() => { void openFolder() }}><FolderOpen size={14} /> Open folder</button><button onClick={() => zipInputRef.current?.click()}><Upload size={14} /> Open project</button></div></details><button className="workspace-button" onClick={downloadProject}><Download size={15} /><span>Download project</span></button><input ref={zipInputRef} className="hidden-input" type="file" accept=".zip,application/zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openZip(file); event.target.value = '' }} /><button className={`cloud-status ${account ? 'connected' : ''}`} onClick={handleAuthClick}><Cloud size={16} /><span>{account ? 'Microsoft connected' : 'Sign in with Microsoft'}</span></button><button className="icon-button" aria-label={isGraphicsOpen ? 'Collapse graphics window' : 'Expand graphics window'} onClick={() => setIsGraphicsOpen((open) => !open)}>{isGraphicsOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button><button className="icon-button" aria-label="Settings"><Settings2 size={18} /></button><div className="avatar" title={account?.username ?? 'Not signed in'}><UserRound size={16} /></div></div></header>
+      <header className="topbar"><div className="brand"><button className="icon-button" aria-label={isSidebarOpen ? t.collapseSidebar : t.expandSidebar} onClick={() => setIsSidebarOpen((open) => !open)}>{isSidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button><div className="brand-mark"><Sparkles size={17} /></div><span>glpython</span><span className="brand-divider">/</span><span className="workspace-name">{t.workspaceName}</span></div><div className="topbar-actions"><details className="project-menu"><summary className="workspace-button"><FolderOpen size={15} /><span>{t.openProject}</span><ChevronDown size={13} /></summary><div className="project-menu-options"><button onClick={() => { void openFolder() }}><FolderOpen size={14} /> {t.openFolder}</button><button onClick={() => zipInputRef.current?.click()}><Upload size={14} /> {t.openProject}</button></div></details><button className="workspace-button" onClick={downloadProject}><Download size={15} /><span>{t.downloadProject}</span></button><input ref={zipInputRef} className="hidden-input" type="file" accept=".zip,application/zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openZip(file); event.target.value = '' }} /><button className={`cloud-status ${account ? 'connected' : ''}`} onClick={handleAuthClick}><Cloud size={16} /><span>{account ? t.microsoftConnected : t.signInWithMicrosoft}</span></button><button className="icon-button" aria-label={isGraphicsOpen ? t.collapseGraphics : t.expandGraphics} onClick={() => setIsGraphicsOpen((open) => !open)}>{isGraphicsOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button><button className="workspace-button" onClick={toggleLocale} aria-label={t.language}><Languages size={15} /><span>{t.language}</span></button><button className="icon-button" aria-label={t.settings}><Settings2 size={18} /></button><div className="avatar" title={account?.username ?? t.notSignedIn}><UserRound size={16} /></div></div></header>
       <div className="workspace">
-        {isSidebarOpen && <aside className="sidebar"><div className="course-heading"><div><span className="eyebrow">INTRO TO PYTHON</span><h1>{project.name}</h1></div><button className="icon-button small" aria-label="Course menu"><ChevronDown size={16} /></button></div><div className="progress-row"><span>Lesson 01 of 08</span><strong>12%</strong></div><div className="progress-track"><span /></div><nav className="lesson-nav"><div className="nav-section"><span className="nav-label">PROJECT FILES</span><button className="icon-button small" aria-label="Add file" onClick={addFile}><Plus size={16} /></button></div>{Object.values(project.files).map((file) => <div className={`file-item ${activeFile === file.path ? 'active' : ''}`} key={file.path}><button className="file-open-button" onClick={() => openFile(file.path)}><span className={`file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}</span><span>{file.label}</span>{openFiles.includes(file.path) && <span className="open-file-mark" />}</button><span className="file-actions"><button className="file-action" aria-label={`Rename ${file.path}`} onClick={() => renameFile(file.path)}><Pencil size={13} /></button><button className="file-action danger" aria-label={`Delete ${file.path}`} onClick={() => deleteFile(file.path)}><Trash2 size={13} /></button></span></div>)}</nav><div className="sidebar-bottom"><div className="teacher-note"><GraduationCap size={18} /><div><strong>Teacher's note</strong><span>Start by changing the name.</span></div></div><button className="help-link"><SquareTerminal size={16} /> Python reference</button></div></aside>}
-        <main className="main-area">{authError && <div className="auth-notice" role="status">{authError}</div>}<div className="main-split"><div className="editor-column"><div className="editor-header"><div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong>{!isSaved && <span className="unsaved">Unsaved</span>}</div><div className="editor-actions"><button className="secondary-button" onClick={() => setOutput('Ready when you are. Run your code to see what it does.')}><RotateCcw size={15} /> Reset output</button><button className="secondary-button" onClick={saveFile}><Save size={15} /> Save</button><button className="run-button" onClick={runCode} disabled={isRunning}><Play size={15} fill="currentColor" /> {isRunning ? 'Running...' : 'Run project'}</button></div></div><section className="editor-panel"><div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => setActiveFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span><span className="tab-close" role="button" aria-label={`Close ${file.path}`} onClick={(event) => { event.stopPropagation(); closeFile(path) }}><X size={13} /></span></button> })}</div><div className="editor-wrap"><Editor height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={selectedFile.code} onChange={updateCode} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true }} /></div></section><section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>Output</span><span className="runtime-badge"><span className="pulse" /> Pyodide runtime</span></div><span className="output-hint">Runs {project.mainFile}</span></div><pre>{output}</pre></section></div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>Turtle graphics</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> gturtle window</span>}</div><button className="icon-button small" aria-label="Collapse graphics window" onClick={() => setIsGraphicsOpen(false)}><PanelRightClose size={15} /></button></div>{graphics.length > 0 ? <GraphicsWindow commands={graphics} /> : <p className="graphics-empty">Run a project that imports <code>gturtle</code> to see its drawing here.</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label="Expand graphics window" onClick={() => setIsGraphicsOpen(true)}><PanelRightOpen size={16} /><span>Graphics</span></button>}</div></main>
-      </div><footer className="statusbar"><span><span className="status-dot" /> Python 3.12 in browser</span><span>Autosave is off</span><span>glpython preview · built for learning</span></footer><div className="devbar"><span>Development tools</span><button onClick={resetLocalProject}><Trash2 size={13} /> Clear local project</button></div>
+        {isSidebarOpen && <aside className="sidebar"><div className="course-heading"><div><span className="eyebrow">{t.courseCategory}</span><h1>{project.name}</h1></div><button className="icon-button small" aria-label={t.courseMenu}><ChevronDown size={16} /></button></div><div className="progress-row"><span>{t.lessonProgress}</span><strong>12%</strong></div><div className="progress-track"><span /></div><nav className="lesson-nav"><div className="nav-section"><span className="nav-label">{t.projectFiles}</span><button className="icon-button small" aria-label={t.addFile} onClick={addFile}><Plus size={16} /></button></div>{Object.values(project.files).map((file) => <div className={`file-item ${activeFile === file.path ? 'active' : ''}`} key={file.path}><button className="file-open-button" onClick={() => openFile(file.path)}><span className={`file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}</span><span>{file.label}</span>{openFiles.includes(file.path) && <span className="open-file-mark" />}</button><span className="file-actions"><button className="file-action" aria-label={t.renameFile(file.path)} onClick={() => renameFile(file.path)}><Pencil size={13} /></button><button className="file-action danger" aria-label={t.deleteFile(file.path)} onClick={() => deleteFile(file.path)}><Trash2 size={13} /></button></span></div>)}</nav><div className="sidebar-bottom"><div className="teacher-note"><GraduationCap size={18} /><div><strong>{t.teacherNoteTitle}</strong><span>{t.teacherNoteBody}</span></div></div><button className="help-link"><SquareTerminal size={16} /> {t.pythonReference}</button></div></aside>}
+        <main className="main-area">{authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}<div className="main-split"><div className="editor-column"><div className="editor-header"><div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong>{!isSaved && <span className="unsaved">{t.unsaved}</span>}</div><div className="editor-actions"><button className="secondary-button" onClick={() => setOutput(t.readyOutput)}><RotateCcw size={15} /> {t.resetOutput}</button><button className="secondary-button" onClick={saveFile}><Save size={15} /> {t.save}</button><button className="run-button" onClick={runCode} disabled={isRunning}><Play size={15} fill="currentColor" /> {isRunning ? t.running : t.runProject}</button></div></div><section className="editor-panel"><div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => setActiveFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span><span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); closeFile(path) }}><X size={13} /></span></button> })}</div><div className="editor-wrap"><Editor height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={selectedFile.code} onChange={updateCode} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true }} /></div></section><section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span><span className="runtime-badge"><span className="pulse" /> {t.pyodideRuntime}</span></div><span className="output-hint">{t.runsFile(project.mainFile)}</span></div><pre>{output}</pre></section></div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => setIsGraphicsOpen(false)}><PanelRightClose size={15} /></button></div>{graphics.length > 0 ? <GraphicsWindow commands={graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => setIsGraphicsOpen(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div></main>
+      </div><footer className="statusbar"><span><span className="status-dot" /> {t.statusRuntime}</span><span>{t.autosaveOff}</span><span>{t.footerTagline}</span></footer><div className="devbar"><span>{t.devTools}</span><button onClick={resetLocalProject}><Trash2 size={13} /> {t.clearLocalProject}</button></div>
     </div>
   )
 }

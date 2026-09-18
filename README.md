@@ -11,6 +11,8 @@ The first vertical slice includes:
 - A browser graphics window with a `gturtle`-compatible starter API
 - Output console and run/reset/save interactions
 - Responsive classroom workspace layout
+- Collapsible file sidebar and graphics side panel
+- English/German UI localization, auto-detected from the browser language
 - OneDrive connection state placeholder for the MSAL + Graph integration
 
 ## Run locally
@@ -36,6 +38,10 @@ for _ in range(4):
 ```
 
 The drawing appears in the graphics window after running the project. The current API covers the core teaching operations: `makeTurtle`, `forward`, `backward`, `left`, `right`, `penUp`, `penDown`, `setPenColor`, and `setLineWidth`.
+
+## Language
+
+The interface language toggles between English and German with the button in the header (a globe/translate icon). On first load, it is auto-detected from the browser's language settings and then remembered per browser via local storage.
 
 ## Local project files
 
