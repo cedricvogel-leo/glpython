@@ -13,6 +13,7 @@ The first vertical slice includes:
 - Responsive classroom workspace layout
 - Collapsible file sidebar and graphics side panel
 - English/German UI localization, auto-detected from the browser language
+- `input()` support via an on-page dialog, so interactive console programs work in the browser
 - OneDrive connection state placeholder for the MSAL + Graph integration
 
 ## Run locally
@@ -41,7 +42,13 @@ The drawing appears in the graphics window after running the project. The curren
 
 ## Language
 
-The interface language toggles between English and German with the button in the header (a globe/translate icon). On first load, it is auto-detected from the browser's language settings and then remembered per browser via local storage.
+The interface language can be changed from the language menu in the header, which shows the currently active language and lists all available options in a dropdown. On first load, the language is auto-detected from the browser's language settings and then remembered per browser via local storage.
+
+## Program input
+
+Programs can call Python's built-in `input()` as usual. Because Python runs in a background Web Worker (so the page stays responsive even if a program has an infinite loop), `input()` pauses that worker and opens an on-page dialog asking for the requested value. Submitting the dialog resumes execution with the typed value; cancelling raises `EOFError`, just like closing stdin in a terminal.
+
+This relies on `SharedArrayBuffer`, which browsers only allow on [cross-origin isolated](https://developer.chrome.com/blog/enabling-shared-array-buffer/) pages. The dev server and preview server send the required `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` headers automatically (see `vite.config.ts`). For static hosts that can't set custom response headers, `public/coi-serviceworker.js` (vendored from [gzuidhof/coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker), MIT licensed) enables isolation via a Service Worker instead; it only activates if the page isn't already isolated, so it's safe to keep alongside the Vite headers.
 
 ## Local project files
 
@@ -62,6 +69,8 @@ cp .env.example .env.local
 ```
 
 Register `http://localhost:5173` as a SPA redirect URI. Use `common` for accounts from multiple tenants, or set `VITE_ENTRA_TENANT_ID` to the school tenant ID. The current sign-in requests the delegated `User.Read` permission; Graph OneDrive permissions will be added next.
+
+Sign-in/sign-out use MSAL's redirect flow (full-page navigation) rather than popups, since the strict `Cross-Origin-Opener-Policy` required for the `input()` dialog's `SharedArrayBuffer` bridge breaks popup-based auth.
 
 ## Next integration step
 

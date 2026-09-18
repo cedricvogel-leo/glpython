@@ -1,4 +1,4 @@
-import { PublicClientApplication, type AccountInfo, type AuthenticationResult } from '@azure/msal-browser'
+import { PublicClientApplication, type AccountInfo } from '@azure/msal-browser'
 
 const clientId = import.meta.env.VITE_ENTRA_CLIENT_ID
 const tenantId = import.meta.env.VITE_ENTRA_TENANT_ID || 'common'
@@ -35,16 +35,18 @@ export async function initializeAuth(): Promise<AccountInfo | null> {
   return msalInstance.getActiveAccount()
 }
 
-export async function signIn(): Promise<AccountInfo | null> {
-  if (!msalInstance) return null
+// Sign-in uses a full-page redirect rather than a popup. Cross-origin
+// isolation (required for the input() dialog's SharedArrayBuffer bridge)
+// severs the window.opener link that MSAL's popup flow depends on, so the
+// redirect flow is used to stay compatible.
+export async function signIn(): Promise<void> {
+  if (!msalInstance) return
   await initializeAuth()
-  const result: AuthenticationResult = await msalInstance.loginPopup(loginRequest)
-  msalInstance.setActiveAccount(result.account)
-  return result.account
+  await msalInstance.loginRedirect(loginRequest)
 }
 
 export async function signOut(): Promise<void> {
   if (!msalInstance) return
   await initializeAuth()
-  await msalInstance.logoutPopup({ account: msalInstance.getActiveAccount() ?? undefined })
+  await msalInstance.logoutRedirect({ account: msalInstance.getActiveAccount() ?? undefined })
 }

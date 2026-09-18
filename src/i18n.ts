@@ -66,6 +66,11 @@ export type Translation = {
   promptRenameFile: string
   confirmDeleteFile: (path: string) => string
   confirmClearProject: string
+  inputDialogTitle: string
+  inputDialogFallbackPrompt: string
+  inputPlaceholder: string
+  inputSubmit: string
+  inputCancel: string
 }
 
 export const translations: Record<Locale, Translation> = {
@@ -130,6 +135,11 @@ export const translations: Record<Locale, Translation> = {
     promptRenameFile: 'Rename file',
     confirmDeleteFile: (path) => `Delete ${path}?`,
     confirmClearProject: 'Clear the saved local project and reload the starter?',
+    inputDialogTitle: 'Program input',
+    inputDialogFallbackPrompt: 'This program is asking for input:',
+    inputPlaceholder: 'Type your answer...',
+    inputSubmit: 'Submit',
+    inputCancel: 'Cancel',
   },
   de: {
     workspaceName: 'Klassenarbeitsbereich',
@@ -192,6 +202,11 @@ export const translations: Record<Locale, Translation> = {
     promptRenameFile: 'Datei umbenennen',
     confirmDeleteFile: (path) => `${path} löschen?`,
     confirmClearProject: 'Das gespeicherte lokale Projekt löschen und den Startercode neu laden?',
+    inputDialogTitle: 'Programmeingabe',
+    inputDialogFallbackPrompt: 'Dieses Programm bittet um eine Eingabe:',
+    inputPlaceholder: 'Antwort eingeben...',
+    inputSubmit: 'Bestätigen',
+    inputCancel: 'Abbrechen',
   },
 }
 

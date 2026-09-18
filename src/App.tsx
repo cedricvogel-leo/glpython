@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Editor from '@monaco-editor/react'
-import { BookOpen, ChevronDown, Cloud, Download, FileCode2, FolderOpen, GraduationCap, Languages, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Plus, RotateCcw, Save, Settings2, Sparkles, SquareTerminal, Trash2, Upload, UserRound, X } from 'lucide-react'
+import { BookOpen, ChevronDown, Cloud, Download, FileCode2, FolderOpen, GraduationCap, Languages, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Plus, RotateCcw, Save, Settings2, Sparkles, SquareTerminal, Terminal, Trash2, Upload, UserRound, X } from 'lucide-react'
 import { addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from './project'
 import type { ProjectFileKind } from './project'
 import { initializeAuth, isAuthConfigured, signIn, signOut } from './auth'
@@ -24,9 +24,13 @@ function App() {
   const [authErrorKey, setAuthErrorKey] = useState<'' | 'init' | 'config' | 'cancelled'>('')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [isGraphicsOpen, setIsGraphicsOpen] = useState(true)
+  const [inputRequest, setInputRequest] = useState<string | null>(null)
+  const [inputValue, setInputValue] = useState('')
   const workerRef = useRef<Worker | null>(null)
   const zipInputRef = useRef<HTMLInputElement | null>(null)
   const languageMenuRef = useRef<HTMLDetailsElement | null>(null)
+  const inputFieldRef = useRef<HTMLInputElement | null>(null)
+  const inputChannelRef = useRef<{ control: Int32Array; payload: Uint8Array } | null>(null)
   const selectedFile = project.files[activeFile] ?? project.files[project.mainFile]
 
   useEffect(() => {
@@ -57,7 +61,7 @@ function App() {
         await signOut()
         setAccount(null)
       } else {
-        setAccount(await signIn())
+        await signIn()
       }
     } catch {
       setAuthErrorKey('cancelled')
@@ -114,14 +118,40 @@ function App() {
 
   useEffect(() => {
     const worker = new Worker('/pyodide-worker.js')
-    worker.onmessage = (event: MessageEvent<{ type: string; output?: string; graphics?: TurtleCommand[] }>) => {
+    worker.onmessage = (event: MessageEvent<{ type: string; output?: string; graphics?: TurtleCommand[]; prompt?: string }>) => {
       const currentTranslation = translations[localeRef.current]
       if (event.data.type === 'ready') setOutput(currentTranslation.pythonReadyOutput)
       if (event.data.type === 'result' || event.data.type === 'error') { setOutput(event.data.output || currentTranslation.noOutput); setGraphics(event.data.graphics ?? []); setIsRunning(false) }
+      if (event.data.type === 'input_request') { setInputValue(''); setInputRequest(event.data.prompt ?? '') }
+    }
+    if (typeof SharedArrayBuffer !== 'undefined') {
+      const buffer = new SharedArrayBuffer(8 + 4096)
+      const control = new Int32Array(buffer, 0, 2)
+      const payload = new Uint8Array(buffer, 8)
+      inputChannelRef.current = { control, payload }
+      worker.postMessage({ type: 'init-input-channel', buffer })
     }
     workerRef.current = worker
     return () => worker.terminate()
   }, [])
+
+  useEffect(() => {
+    if (inputRequest !== null) inputFieldRef.current?.focus()
+  }, [inputRequest])
+
+  const respondToInput = (cancelled: boolean) => {
+    const channel = inputChannelRef.current
+    if (channel) {
+      const encoded = cancelled ? new Uint8Array(0) : new TextEncoder().encode(inputValue).slice(0, channel.payload.length)
+      channel.payload.fill(0)
+      channel.payload.set(encoded)
+      Atomics.store(channel.control, 1, encoded.length)
+      Atomics.store(channel.control, 0, cancelled ? 3 : 2)
+      Atomics.notify(channel.control, 0)
+    }
+    setInputRequest(null)
+    setInputValue('')
+  }
 
   const updateCode = (code: string | undefined) => {
     setProject((currentProject) => updateProjectFile(currentProject, activeFile, code ?? ''))
@@ -197,6 +227,7 @@ function App() {
         {isSidebarOpen && <aside className="sidebar"><div className="course-heading"><div><span className="eyebrow">{t.courseCategory}</span><h1>{project.name}</h1></div><button className="icon-button small" aria-label={t.courseMenu}><ChevronDown size={16} /></button></div><div className="progress-row"><span>{t.lessonProgress}</span><strong>12%</strong></div><div className="progress-track"><span /></div><nav className="lesson-nav"><div className="nav-section"><span className="nav-label">{t.projectFiles}</span><button className="icon-button small" aria-label={t.addFile} onClick={addFile}><Plus size={16} /></button></div>{Object.values(project.files).map((file) => <div className={`file-item ${activeFile === file.path ? 'active' : ''}`} key={file.path}><button className="file-open-button" onClick={() => openFile(file.path)}><span className={`file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}</span><span>{file.label}</span>{openFiles.includes(file.path) && <span className="open-file-mark" />}</button><span className="file-actions"><button className="file-action" aria-label={t.renameFile(file.path)} onClick={() => renameFile(file.path)}><Pencil size={13} /></button><button className="file-action danger" aria-label={t.deleteFile(file.path)} onClick={() => deleteFile(file.path)}><Trash2 size={13} /></button></span></div>)}</nav><div className="sidebar-bottom"><div className="teacher-note"><GraduationCap size={18} /><div><strong>{t.teacherNoteTitle}</strong><span>{t.teacherNoteBody}</span></div></div><button className="help-link"><SquareTerminal size={16} /> {t.pythonReference}</button></div></aside>}
         <main className="main-area">{authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}<div className="main-split"><div className="editor-column"><div className="editor-header"><div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong>{!isSaved && <span className="unsaved">{t.unsaved}</span>}</div><div className="editor-actions"><button className="secondary-button" onClick={() => setOutput(t.readyOutput)}><RotateCcw size={15} /> {t.resetOutput}</button><button className="secondary-button" onClick={saveFile}><Save size={15} /> {t.save}</button><button className="run-button" onClick={runCode} disabled={isRunning}><Play size={15} fill="currentColor" /> {isRunning ? t.running : t.runProject}</button></div></div><section className="editor-panel"><div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => setActiveFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span><span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); closeFile(path) }}><X size={13} /></span></button> })}</div><div className="editor-wrap"><Editor height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={selectedFile.code} onChange={updateCode} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true }} /></div></section><section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span><span className="runtime-badge"><span className="pulse" /> {t.pyodideRuntime}</span></div><span className="output-hint">{t.runsFile(project.mainFile)}</span></div><pre>{output}</pre></section></div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => setIsGraphicsOpen(false)}><PanelRightClose size={15} /></button></div>{graphics.length > 0 ? <GraphicsWindow commands={graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => setIsGraphicsOpen(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div></main>
       </div><footer className="statusbar"><span><span className="status-dot" /> {t.statusRuntime}</span><span>{t.autosaveOff}</span><span>{t.footerTagline}</span></footer><div className="devbar"><span>{t.devTools}</span><button onClick={resetLocalProject}><Trash2 size={13} /> {t.clearLocalProject}</button></div>
+      {inputRequest !== null && <div className="input-dialog-backdrop" role="presentation" onClick={() => respondToInput(true)}><form className="input-dialog" role="dialog" aria-modal="true" aria-label={t.inputDialogTitle} onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); respondToInput(false) }}><div className="input-dialog-heading"><Terminal size={16} /><span>{t.inputDialogTitle}</span></div><p className="input-dialog-prompt">{inputRequest || t.inputDialogFallbackPrompt}</p><input ref={inputFieldRef} className="input-dialog-field" type="text" value={inputValue} onChange={(event) => setInputValue(event.target.value)} placeholder={t.inputPlaceholder} /><div className="input-dialog-actions"><button type="button" className="secondary-button" onClick={() => respondToInput(true)}>{t.inputCancel}</button><button type="submit" className="run-button">{t.inputSubmit}</button></div></form></div>}
     </div>
   )
 }

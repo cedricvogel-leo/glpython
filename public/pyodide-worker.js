@@ -1,5 +1,8 @@
 let pyodideReadyPromise
 let mountedFiles = []
+let inputControl = null
+let inputPayload = null
+const INPUT_CANCELLED_MARKER = '__GLPYTHON_INPUT_CANCELLED__'
 const turtleModule = `
 import math
 commands = []
@@ -57,7 +60,45 @@ async function getPyodide() {
   return pyodideReadyPromise
 }
 
+// Bridges Python's input() to a dialog on the main page. Blocks this worker
+// thread (via Atomics.wait) until the main thread writes a response into the
+// shared buffer set up by the 'init-input-channel' message below.
+function requestInputFromMainThread(promptText) {
+  if (!inputControl || !inputPayload) {
+    throw new Error('Program input is not available in this browser session. Reload the page and try again.')
+  }
+  Atomics.store(inputControl, 0, 1)
+  self.postMessage({ type: 'input_request', prompt: promptText })
+  Atomics.wait(inputControl, 0, 1)
+  const state = Atomics.load(inputControl, 0)
+  const length = Atomics.load(inputControl, 1)
+  Atomics.store(inputControl, 0, 0)
+  if (state === 3) throw new Error(INPUT_CANCELLED_MARKER)
+  return new TextDecoder().decode(inputPayload.slice(0, length))
+}
+self.requestInputFromMainThread = requestInputFromMainThread
+
+const inputPreamble = `
+import builtins
+from js import requestInputFromMainThread
+
+def _glpython_input(prompt=""):
+  try:
+    return requestInputFromMainThread(str(prompt))
+  except Exception as error:
+    if "${INPUT_CANCELLED_MARKER}" in str(error):
+      raise EOFError("Input was cancelled.") from None
+    raise
+
+builtins.input = _glpython_input
+`
+
 self.onmessage = async (event) => {
+  if (event.data.type === 'init-input-channel') {
+    inputControl = new Int32Array(event.data.buffer, 0, 2)
+    inputPayload = new Uint8Array(event.data.buffer, 8)
+    return
+  }
   if (event.data.type !== 'run') return
   try {
     const pyodide = await getPyodide()
@@ -76,6 +117,7 @@ self.onmessage = async (event) => {
     let output = ''
     pyodide.setStdout({ batched: (text) => { output += `${text}\n` } })
     pyodide.setStderr({ batched: (text) => { output += `${text}\n` } })
+    await pyodide.runPythonAsync(inputPreamble)
     await pyodide.runPythonAsync(`import runpy\nimport sys\nsys.path.insert(0, "/")\nrunpy.run_path(${JSON.stringify(`/${event.data.project.mainFile}`)}, run_name="__main__")`)
     const graphicsJson = await pyodide.runPythonAsync('import json, gturtle\njson.dumps(gturtle.commands)')
     self.postMessage({ type: 'result', output: output.trim(), graphics: JSON.parse(String(graphicsJson)) })
