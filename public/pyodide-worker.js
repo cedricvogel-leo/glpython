@@ -52,12 +52,55 @@ def setLineWidth(width):
   _width = width
 `
 
+// Python source shared by both run modes: monkeypatches builtins.input to bridge
+// through requestInputFromMainThread (defined further below).
+const inputPreamble = `
+import builtins
+from js import requestInputFromMainThread
+
+def _glpython_input(prompt=""):
+  try:
+    return requestInputFromMainThread(str(prompt))
+  except Exception as error:
+    if "${INPUT_CANCELLED_MARKER}" in str(error):
+      raise EOFError("Input was cancelled.") from None
+    raise
+
+builtins.input = _glpython_input
+`
+
 async function getPyodide() {
   if (!pyodideReadyPromise) {
     importScripts('https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js')
     pyodideReadyPromise = loadPyodide()
   }
   return pyodideReadyPromise
+}
+
+// Mounts the project's files into the Pyodide virtual filesystem and forces a
+// fresh re-import of any previously-cached student modules, so edits to
+// secondary files (e.g. greetings.py) always take effect on the next run.
+async function mountProjectFiles(pyodide, files) {
+  for (const path of mountedFiles) {
+    try { pyodide.FS.unlink(`/${path}`) } catch {}
+  }
+  mountedFiles = []
+  for (const [path, code] of Object.entries(files)) {
+    const directory = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
+    if (directory) pyodide.FS.mkdirTree(`/${directory}`)
+    pyodide.FS.writeFile(`/${path}`, code)
+    mountedFiles.push(path)
+  }
+  pyodide.FS.writeFile('/gturtle.py', turtleModule)
+  const mountedPathsJson = JSON.stringify([...mountedFiles, 'gturtle.py'].map((path) => `/${path}`))
+  await pyodide.runPythonAsync(`
+import sys as _glpython_sys
+for _glpython_mounted_path in ${mountedPathsJson}:
+  for _glpython_module_name in list(_glpython_sys.modules):
+    _glpython_module = _glpython_sys.modules[_glpython_module_name]
+    if getattr(_glpython_module, "__file__", None) == _glpython_mounted_path:
+      del _glpython_sys.modules[_glpython_module_name]
+`)
 }
 
 // Bridges Python's input() to a dialog on the main page. Blocks this worker
@@ -78,20 +121,867 @@ function requestInputFromMainThread(promptText) {
 }
 self.requestInputFromMainThread = requestInputFromMainThread
 
-const inputPreamble = `
-import builtins
-from js import requestInputFromMainThread
+// Builds the Python source for a single "visualize" run. Real CPython
+// execution (via sys.settrace / sys.monitoring) never exposes the values
+// sitting on its internal evaluation stack, so there is no way to observe
+// "3 * 4" collapsing to "12" mid-expression by tracing real bytecode. To get
+// that (and to make loop bodies visibly "reset" each iteration) this harness
+// instead runs a small custom tree-walking interpreter over the student's
+// own ast.parse() tree.
+//
+// Design for extensibility: statements and expressions are dispatched by AST
+// node type through two dicts (_STMT_HANDLERS / _EXPR_HANDLERS). Common
+// constructs (arithmetic, comparisons, boolean ops, if/while/for, function
+// defs/calls, classes, try/except, literals, f-strings) are hand-implemented
+// so they report fine-grained per-node "eval" steps with substituted values.
+// Anything not yet hand-implemented falls back to compiling+exec'ing/eval'ing
+// just that one AST node with Python's real compiler against the
+// interpreter's current scope - so the program still runs *correctly*, it
+// just replays as a single opaque step instead of a step per sub-expression.
+// Moving a construct from generic to fine-grained later only requires adding
+// one more handler function.
+function visualHarnessSource(mainPath, pythonPaths) {
+  return `
+import ast, sys, json, math, traceback
+import types as _glpython_types
 
-def _glpython_input(prompt=""):
+_GLPYTHON_MAX_STEPS = 6000
+
+class _GlpythonTraceLimit(BaseException):
+  pass
+
+class _GlpythonBreak(Exception):
+  pass
+
+class _GlpythonContinue(Exception):
+  pass
+
+class _GlpythonReturn(Exception):
+  def __init__(self, value):
+    self.value = value
+
+_GLPYTHON_OP_SYMBOLS = {
+  ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.FloorDiv: "//", ast.Mod: "%", ast.Pow: "**",
+  ast.LShift: "<<", ast.RShift: ">>", ast.BitOr: "|", ast.BitXor: "^", ast.BitAnd: "&", ast.MatMult: "@",
+  ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">=",
+  ast.Is: "is", ast.IsNot: "is not", ast.In: "in", ast.NotIn: "not in",
+  ast.And: "and", ast.Or: "or", ast.Not: "not", ast.UAdd: "+", ast.USub: "-", ast.Invert: "~",
+}
+
+import operator as _op
+_GLPYTHON_BINOPS = {
+  ast.Add: _op.add, ast.Sub: _op.sub, ast.Mult: _op.mul, ast.Div: _op.truediv, ast.FloorDiv: _op.floordiv,
+  ast.Mod: _op.mod, ast.Pow: _op.pow, ast.LShift: _op.lshift, ast.RShift: _op.rshift,
+  ast.BitOr: _op.or_, ast.BitXor: _op.xor, ast.BitAnd: _op.and_, ast.MatMult: _op.matmul,
+}
+_GLPYTHON_COMPARE_OPS = {
+  ast.Eq: _op.eq, ast.NotEq: _op.ne, ast.Lt: _op.lt, ast.LtE: _op.le, ast.Gt: _op.gt, ast.GtE: _op.ge,
+  ast.Is: _op.is_, ast.IsNot: _op.is_not,
+  ast.In: (lambda a, b: a in b), ast.NotIn: (lambda a, b: a not in b),
+}
+_GLPYTHON_UNARY_OPS = {
+  ast.UAdd: _op.pos, ast.USub: _op.neg, ast.Not: _op.not_, ast.Invert: _op.invert,
+}
+
+def _glpython_is_uninteresting_for_substitution(value):
+  # Callables/modules evaluate to themselves via a bare Name lookup (e.g. the
+  # "add" in "add(x, 4)"). Their repr ("<function add at 0x...>") is visual
+  # noise inline in the source, so we skip substituting them and let the
+  # enclosing Call node's own eval step show the real result instead.
+  return callable(value) or isinstance(value, _glpython_types.ModuleType)
+
+def _glpython_safe_repr(value, limit=160):
   try:
-    return requestInputFromMainThread(str(prompt))
-  except Exception as error:
-    if "${INPUT_CANCELLED_MARKER}" in str(error):
-      raise EOFError("Input was cancelled.") from None
-    raise
+    text = repr(value)
+  except Exception:
+    text = "<unrepresentable>"
+  if len(text) > limit:
+    text = text[: limit - 1] + "…"
+  return text
 
-builtins.input = _glpython_input
+# ---------------------------------------------------------------------------
+# Scopes: a simple chain of dict-based frames. Each function call / class body
+# pushes a new frame; module-level code uses the bottom-most frame. Name
+# resolution walks outward like real Python's LEGB rule (simplified: no
+# distinct "enclosing" vs "global" special-casing beyond walking the chain).
+# ---------------------------------------------------------------------------
+class _GlpythonScope:
+  def __init__(self, vars_dict, parent=None, kind="module"):
+    self.vars = vars_dict
+    self.parent = parent
+    self.kind = kind
+
+  def get(self, name):
+    scope = self
+    while scope is not None:
+      if name in scope.vars:
+        return scope.vars[name]
+      scope = scope.parent if scope.kind != "function" else scope.module_scope
+    import builtins
+    if hasattr(builtins, name):
+      return getattr(builtins, name)
+    raise NameError(f"name '{name}' is not defined")
+
+  def set(self, name, value):
+    self.vars[name] = value
+
+  def set_nonlocal_or_global(self, name, value, is_global):
+    target = self.module_scope if is_global else (self.parent or self)
+    target.vars[name] = value
+
+_glpython_module_scope = None
+
+def _glpython_make_function_scope(vars_dict):
+  scope = _GlpythonScope(vars_dict, parent=None, kind="function")
+  scope.module_scope = _glpython_module_scope
+  return scope
+
+# ---------------------------------------------------------------------------
+# Step recording. Every recorded step captures a source span (line/col) and,
+# for expression steps, the substituted display text to show for that node
+# once evaluated (e.g. "3 * 4" -> "12"), which is exactly what lets the UI
+# show sub-expressions collapsing into their computed values one at a time.
+# ---------------------------------------------------------------------------
+_glpython_trace_log = []
+_glpython_step_count = 0
+_glpython_stdout_len = 0
+_glpython_graphics_commands = None
+_glpython_call_depth = 0
+_GLPYTHON_MAX_CALL_DEPTH = 200
+# Node ids whose "eval" step should never be shown as an inline substitution
+# even though they're otherwise substitutable (e.g. a for-loop's iterable
+# expression "range(3)" - the user should always see the call as written,
+# not collapsed to its result "range(0, 3)", since it's the loop-iter step's
+# own annotation that communicates the current value instead).
+_glpython_suppress_substitution_ids = set()
+
+class _GlpythonCallDepthExceeded(Exception):
+  pass
+
+def _glpython_pos(node):
+  return (getattr(node, "lineno", None), getattr(node, "end_lineno", None), getattr(node, "col_offset", None), getattr(node, "end_col_offset", None))
+
+def _glpython_record(node, kind, label, value_text=None, func_name="<module>", extra_locals=None, reset_node_ids=None, annotate_node_id=None, annotate_text=None):
+  global _glpython_step_count
+  if getattr(node, "_glpython_id", None) in _glpython_suppress_substitution_ids:
+    value_text = None
+  if _glpython_step_count >= _GLPYTHON_MAX_STEPS:
+    raise _GlpythonTraceLimit()
+  line, end_line, col, end_col = _glpython_pos(node)
+  if line is None:
+    return
+  entry = {
+    "step": _glpython_step_count,
+    "path": _glpython_current_path,
+    "func": func_name,
+    "line": line,
+    "endLine": end_line if end_line is not None else line,
+    "col": col if col is not None else 0,
+    "endCol": end_col if end_col is not None else 0,
+    "kind": kind,
+    "label": label,
+    "nodeId": getattr(node, "_glpython_id", None),
+    "valueText": value_text,
+    "locals": extra_locals or {},
+    "stdoutLen": _glpython_stdout_len,
+    "graphicsLen": len(_glpython_graphics_commands) if _glpython_graphics_commands is not None else 0,
+    "resetNodeIds": reset_node_ids or [],
+    "annotateNodeId": annotate_node_id,
+    "annotateText": annotate_text,
+  }
+  _glpython_trace_log.append(entry)
+  _glpython_step_count += 1
+
+def _glpython_snapshot_locals(scope, limit=80):
+  snapshot = {}
+  cursor = scope
+  seen = set()
+  count = 0
+  while cursor is not None and count < limit:
+    for name, value in cursor.vars.items():
+      if name not in seen and not name.startswith("_glpython"):
+        seen.add(name)
+        snapshot[name] = _glpython_safe_repr(value)
+        count += 1
+    cursor = cursor.module_scope if cursor.kind == "function" else cursor.parent
+  return snapshot
+
+_glpython_current_path = None
+_glpython_current_func_stack = ["<module>"]
+
+def _glpython_current_func():
+  return _glpython_current_func_stack[-1]
+
+# ---------------------------------------------------------------------------
+# Fallback: compiles/evaluates a single AST node against the current scope
+# using the real Python compiler. Used for constructs without a dedicated
+# hand-written handler yet (this is the designed extension point - moving a
+# node type out of the fallback just means adding a case to _EXPR_HANDLERS /
+# _STMT_HANDLERS below).
+# ---------------------------------------------------------------------------
+def _glpython_flatten_scope(scope):
+  merged = {}
+  cursor = scope
+  chain = []
+  while cursor is not None:
+    chain.append(cursor)
+    cursor = cursor.module_scope if cursor.kind == "function" else cursor.parent
+  for frame in reversed(chain):
+    merged.update(frame.vars)
+  return merged
+
+def _glpython_fallback_eval(node, scope):
+  expr = ast.Expression(body=node)
+  ast.fix_missing_locations(expr)
+  code = compile(expr, "<glpython>", "eval")
+  return eval(code, _glpython_flatten_scope(scope))
+
+def _glpython_fallback_exec(node, scope):
+  module = ast.Module(body=[node], type_ignores=[])
+  ast.fix_missing_locations(module)
+  code = compile(module, "<glpython>", "exec")
+  env = _glpython_flatten_scope(scope)
+  exec(code, env)
+  # Write back any names the fallback statement touched so subsequent
+  # hand-rolled statements see the effects (best-effort: module-level and
+  # local names only, matching this interpreter's simplified scoping model).
+  for name, value in env.items():
+    if not name.startswith("__") and (name in scope.vars or scope.parent is None):
+      scope.vars[name] = value
+
+def _glpython_summary_for_node(node):
+  return getattr(node, "_glpython_summary", type(node).__name__)
+
+# ---------------------------------------------------------------------------
+# Expression evaluation. Returns the Python value of the node, recording an
+# "eval" step (with the substituted display text) for node types that have a
+# meaningful standalone value worth showing collapsing in place.
+# ---------------------------------------------------------------------------
+def _glpython_node_source(node):
+  return getattr(node, "_glpython_source", _glpython_summary_for_node(node))
+
+def _glpython_eval(node, scope):
+  handler = _EXPR_HANDLERS.get(type(node))
+  if handler is None:
+    value = _glpython_fallback_eval(node, scope)
+    _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(value), _glpython_current_func())
+    return value
+  return handler(node, scope)
+
+def _eval_constant(node, scope):
+  return node.value
+
+def _eval_name(node, scope):
+  value = scope.get(node.id)
+  value_text = None if _glpython_is_uninteresting_for_substitution(value) else _glpython_safe_repr(value)
+  _glpython_record(node, "eval", node.id, value_text, _glpython_current_func())
+  return value
+
+def _eval_binop(node, scope):
+  left = _glpython_eval(node.left, scope)
+  right = _glpython_eval(node.right, scope)
+  op_func = _GLPYTHON_BINOPS.get(type(node.op))
+  value = op_func(left, right) if op_func else _glpython_fallback_eval(node, scope)
+  symbol = _GLPYTHON_OP_SYMBOLS.get(type(node.op), "?")
+  _glpython_record(node, "eval", f"{_glpython_safe_repr(left, 40)} {symbol} {_glpython_safe_repr(right, 40)}", _glpython_safe_repr(value), _glpython_current_func())
+  return value
+
+def _eval_unaryop(node, scope):
+  operand = _glpython_eval(node.operand, scope)
+  op_func = _GLPYTHON_UNARY_OPS.get(type(node.op))
+  value = op_func(operand) if op_func else _glpython_fallback_eval(node, scope)
+  symbol = _GLPYTHON_OP_SYMBOLS.get(type(node.op), "?")
+  _glpython_record(node, "eval", f"{symbol}{_glpython_safe_repr(operand, 40)}", _glpython_safe_repr(value), _glpython_current_func())
+  return value
+
+def _eval_boolop(node, scope):
+  symbol = _GLPYTHON_OP_SYMBOLS.get(type(node.op), "?")
+  result = None
+  evaluated_texts = []
+  for index, value_node in enumerate(node.values):
+    result = _glpython_eval(value_node, scope)
+    evaluated_texts.append(_glpython_safe_repr(result, 40))
+    if isinstance(node.op, ast.And) and not result:
+      break
+    if isinstance(node.op, ast.Or) and result:
+      break
+  _glpython_record(node, "eval", (" " + symbol + " ").join(evaluated_texts), _glpython_safe_repr(result), _glpython_current_func())
+  return result
+
+def _eval_compare(node, scope):
+  left = _glpython_eval(node.left, scope)
+  parts = [_glpython_safe_repr(left, 40)]
+  result = True
+  current = left
+  for op, comparator_node in zip(node.ops, node.comparators):
+    right = _glpython_eval(comparator_node, scope)
+    op_func = _GLPYTHON_COMPARE_OPS.get(type(op))
+    step_result = op_func(current, right) if op_func else _glpython_fallback_eval(node, scope)
+    parts.append(_GLPYTHON_OP_SYMBOLS.get(type(op), "?"))
+    parts.append(_glpython_safe_repr(right, 40))
+    result = result and step_result
+    current = right
+    if not result:
+      break
+  _glpython_record(node, "eval", " ".join(parts), _glpython_safe_repr(result), _glpython_current_func())
+  return result
+
+def _eval_ifexp(node, scope):
+  condition = _glpython_eval(node.test, scope)
+  chosen = node.body if condition else node.orelse
+  value = _glpython_eval(chosen, scope)
+  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(value), _glpython_current_func())
+  return value
+
+def _eval_list(node, scope):
+  values = [_glpython_eval(item, scope) for item in node.elts]
+  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(values), _glpython_current_func())
+  return values
+
+def _eval_tuple(node, scope):
+  values = tuple(_glpython_eval(item, scope) for item in node.elts)
+  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(values), _glpython_current_func())
+  return values
+
+def _eval_set(node, scope):
+  values = {_glpython_eval(item, scope) for item in node.elts}
+  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(values), _glpython_current_func())
+  return values
+
+def _eval_dict(node, scope):
+  result = {}
+  for key_node, value_node in zip(node.keys, node.values):
+    if key_node is None:
+      result.update(_glpython_eval(value_node, scope))
+    else:
+      result[_glpython_eval(key_node, scope)] = _glpython_eval(value_node, scope)
+  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(result), _glpython_current_func())
+  return result
+
+def _eval_attribute(node, scope):
+  target = _glpython_eval(node.value, scope)
+  value = getattr(target, node.attr)
+  value_text = None if _glpython_is_uninteresting_for_substitution(value) else _glpython_safe_repr(value)
+  _glpython_record(node, "eval", f"{_glpython_safe_repr(target, 30)}.{node.attr}", value_text, _glpython_current_func())
+  return value
+
+def _eval_subscript(node, scope):
+  target = _glpython_eval(node.value, scope)
+  index = _glpython_eval(node.slice, scope)
+  value = target[index]
+  _glpython_record(node, "eval", f"{_glpython_safe_repr(target, 30)}[{_glpython_safe_repr(index, 20)}]", _glpython_safe_repr(value), _glpython_current_func())
+  return value
+
+def _eval_slice(node, scope):
+  lower = _glpython_eval(node.lower, scope) if node.lower else None
+  upper = _glpython_eval(node.upper, scope) if node.upper else None
+  step = _glpython_eval(node.step, scope) if node.step else None
+  return slice(lower, upper, step)
+
+def _eval_joinedstr(node, scope):
+  parts = []
+  for value_node in node.values:
+    if isinstance(value_node, ast.Constant):
+      parts.append(str(value_node.value))
+    else:
+      parts.append(str(_glpython_eval(value_node, scope)))
+  value = "".join(parts)
+  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(value), _glpython_current_func())
+  return value
+
+def _eval_formattedvalue(node, scope):
+  value = _glpython_eval(node.value, scope)
+  return format(value, "") if node.format_spec is None else value
+
+def _eval_starred(node, scope):
+  return _glpython_eval(node.value, scope)
+
+# ---------------------------------------------------------------------------
+# User-defined functions are represented by this small callable wrapper so
+# calling them re-enters the interpreter (pushing a fresh scope) instead of
+# falling back to real Python - this is what lets steps inside student
+# functions show up in the trace with correct locals per call.
+# ---------------------------------------------------------------------------
+class _GlpythonFunction:
+  def __init__(self, node, closure_scope, name=None):
+    self.node = node
+    self.closure_scope = closure_scope
+    self.__name__ = name or node.name
+
+  def __call__(self, *args, **kwargs):
+    global _glpython_call_depth
+    _glpython_call_depth += 1
+    if _glpython_call_depth > _GLPYTHON_MAX_CALL_DEPTH:
+      _glpython_call_depth -= 1
+      raise RecursionError("maximum interpreted recursion depth exceeded")
+    try:
+      call_vars = {}
+      arguments = self.node.args
+      positional_names = [a.arg for a in arguments.args]
+      for index, name in enumerate(positional_names):
+        if index < len(args):
+          call_vars[name] = args[index]
+      defaults = arguments.defaults
+      if defaults:
+        default_offset = len(positional_names) - len(defaults)
+        for index, default_node in enumerate(defaults):
+          name = positional_names[default_offset + index]
+          if name not in call_vars:
+            call_vars[name] = _glpython_eval(default_node, self.closure_scope)
+      for name, value in kwargs.items():
+        call_vars[name] = value
+      if arguments.vararg:
+        call_vars[arguments.vararg.arg] = args[len(positional_names):]
+      if arguments.kwarg:
+        call_vars[arguments.kwarg.arg] = {k: v for k, v in kwargs.items() if k not in positional_names}
+      scope = _glpython_make_function_scope(call_vars)
+      _glpython_current_func_stack.append(self.__name__)
+      try:
+        _glpython_exec_stmts(self.node.body, scope)
+        return None
+      except _GlpythonReturn as ret:
+        return ret.value
+      finally:
+        _glpython_current_func_stack.pop()
+    finally:
+      _glpython_call_depth -= 1
+
+def _eval_call(node, scope):
+  func = _glpython_eval(node.func, scope)
+  args = []
+  for arg_node in node.args:
+    if isinstance(arg_node, ast.Starred):
+      args.extend(_glpython_eval(arg_node, scope))
+    else:
+      args.append(_glpython_eval(arg_node, scope))
+  kwargs = {}
+  for kw in node.keywords:
+    if kw.arg is None:
+      kwargs.update(_glpython_eval(kw.value, scope))
+    else:
+      kwargs[kw.arg] = _glpython_eval(kw.value, scope)
+  value = func(*args, **kwargs)
+  callee_name = getattr(func, "__name__", _glpython_node_source(node.func))
+  _glpython_record(node, "eval", f"{callee_name}(...)", _glpython_safe_repr(value), _glpython_current_func())
+  return value
+
+def _eval_lambda(node, scope):
+  return _GlpythonFunction(ast.FunctionDef(name="<lambda>", args=node.args, body=[ast.Return(value=node.body)], decorator_list=[], returns=None, type_comment=None, lineno=node.lineno, col_offset=node.col_offset, end_lineno=node.end_lineno, end_col_offset=node.end_col_offset), scope)
+
+_EXPR_HANDLERS = {
+  ast.Constant: _eval_constant,
+  ast.Name: _eval_name,
+  ast.BinOp: _eval_binop,
+  ast.UnaryOp: _eval_unaryop,
+  ast.BoolOp: _eval_boolop,
+  ast.Compare: _eval_compare,
+  ast.IfExp: _eval_ifexp,
+  ast.List: _eval_list,
+  ast.Tuple: _eval_tuple,
+  ast.Set: _eval_set,
+  ast.Dict: _eval_dict,
+  ast.Attribute: _eval_attribute,
+  ast.Subscript: _eval_subscript,
+  ast.Slice: _eval_slice,
+  ast.JoinedStr: _eval_joinedstr,
+  ast.FormattedValue: _eval_formattedvalue,
+  ast.Starred: _eval_starred,
+  ast.Call: _eval_call,
+  ast.Lambda: _eval_lambda,
+}
+
+# ---------------------------------------------------------------------------
+# Statement execution. _glpython_exec_stmts runs a list of statements in
+# order (used for module bodies, function bodies, and - importantly - loop
+# bodies, which are simply re-run in full for every iteration so the UI
+# naturally "resets" the block's steps each time around).
+# ---------------------------------------------------------------------------
+def _glpython_assign_target(target, value, scope):
+  if isinstance(target, ast.Name):
+    scope.set(target.id, value)
+  elif isinstance(target, (ast.Tuple, ast.List)):
+    values = list(value)
+    star_index = next((i for i, element in enumerate(target.elts) if isinstance(element, ast.Starred)), None)
+    if star_index is None:
+      for element, item in zip(target.elts, values):
+        _glpython_assign_target(element, item, scope)
+    else:
+      before = target.elts[:star_index]
+      after = target.elts[star_index + 1:]
+      for element, item in zip(before, values[:len(before)]):
+        _glpython_assign_target(element, item, scope)
+      tail_count = len(after)
+      _glpython_assign_target(target.elts[star_index].value, values[len(before): len(values) - tail_count], scope)
+      for element, item in zip(after, values[len(values) - tail_count:]):
+        _glpython_assign_target(element, item, scope)
+  elif isinstance(target, ast.Attribute):
+    obj = _glpython_eval(target.value, scope)
+    setattr(obj, target.attr, value)
+  elif isinstance(target, ast.Subscript):
+    obj = _glpython_eval(target.value, scope)
+    index = _glpython_eval(target.slice, scope)
+    obj[index] = value
+  else:
+    raise NotImplementedError(f"unsupported assignment target: {type(target).__name__}")
+
+def _exec_assign(node, scope):
+  value = _glpython_eval(node.value, scope)
+  for target in node.targets:
+    _glpython_assign_target(target, value, scope)
+  names = ", ".join(_glpython_node_source(target) for target in node.targets)
+  _glpython_record(node, "exec", f"{names} = {_glpython_safe_repr(value)}", None, _glpython_current_func(), _glpython_snapshot_locals(scope))
+
+def _exec_augassign(node, scope):
+  current = _glpython_eval(node.target, scope) if not isinstance(node.target, ast.Name) else scope.get(node.target.id)
+  right = _glpython_eval(node.value, scope)
+  op_func = _GLPYTHON_BINOPS.get(type(node.op))
+  new_value = op_func(current, right) if op_func else _glpython_fallback_eval(ast.BinOp(left=ast.Constant(value=current), op=node.op, right=ast.Constant(value=right), lineno=node.lineno, col_offset=node.col_offset, end_lineno=node.end_lineno, end_col_offset=node.end_col_offset), scope)
+  _glpython_assign_target(node.target, new_value, scope)
+  symbol = _GLPYTHON_OP_SYMBOLS.get(type(node.op), "?")
+  _glpython_record(node, "exec", f"{_glpython_node_source(node.target)} {symbol}= {_glpython_safe_repr(right)}", _glpython_safe_repr(new_value), _glpython_current_func(), _glpython_snapshot_locals(scope))
+
+def _exec_annassign(node, scope):
+  if node.value is not None:
+    value = _glpython_eval(node.value, scope)
+    _glpython_assign_target(node.target, value, scope)
+    _glpython_record(node, "exec", f"{_glpython_node_source(node.target)} = {_glpython_safe_repr(value)}", None, _glpython_current_func(), _glpython_snapshot_locals(scope))
+
+def _exec_expr(node, scope):
+  value = _glpython_eval(node.value, scope)
+  return value
+
+def _exec_pass(node, scope):
+  pass
+
+def _exec_if(node, scope):
+  condition = _glpython_eval(node.test, scope)
+  _glpython_record(node, "branch", f"if {_glpython_node_source(node.test)}", "true" if condition else "false", _glpython_current_func())
+  branch = node.body if condition else node.orelse
+  _glpython_exec_stmts(branch, scope)
+
+def _exec_while(node, scope):
+  body_ids = getattr(node, "_glpython_body_ids", None)
+  while True:
+    condition = _glpython_eval(node.test, scope)
+    _glpython_record(node, "branch", f"while {_glpython_node_source(node.test)}", "true" if condition else "false", _glpython_current_func(), reset_node_ids=body_ids if condition else None)
+    if not condition:
+      break
+    try:
+      _glpython_exec_stmts(node.body, scope)
+    except _GlpythonBreak:
+      break
+    except _GlpythonContinue:
+      continue
+  if node.orelse:
+    _glpython_exec_stmts(node.orelse, scope)
+
+def _exec_for(node, scope):
+  iter_ids = getattr(node, "_glpython_iter_ids", None) or []
+  _glpython_suppress_substitution_ids.update(iter_ids)
+  try:
+    iterable = _glpython_eval(node.iter, scope)
+  finally:
+    _glpython_suppress_substitution_ids.difference_update(iter_ids)
+  body_ids = getattr(node, "_glpython_body_ids", None)
+  # Only a plain "for x in ...:" target gets the inline "=value" annotation;
+  # tuple/list unpacking targets (e.g. "for k, v in ...") are left alone for
+  # now rather than guessing which name to annotate.
+  target_id = node.target._glpython_id if isinstance(node.target, ast.Name) else None
+  finished_normally = True
+  for item in iterable:
+    _glpython_assign_target(node.target, item, scope)
+    _glpython_record(node, "loop-iter", f"for {_glpython_node_source(node.target)} in {_glpython_node_source(node.iter)}", None, _glpython_current_func(), _glpython_snapshot_locals(scope), reset_node_ids=body_ids, annotate_node_id=target_id, annotate_text=f"={_glpython_safe_repr(item)}")
+    try:
+      _glpython_exec_stmts(node.body, scope)
+    except _GlpythonBreak:
+      finished_normally = False
+      break
+    except _GlpythonContinue:
+      continue
+  if node.orelse and finished_normally:
+    _glpython_exec_stmts(node.orelse, scope)
+
+def _exec_break(node, scope):
+  raise _GlpythonBreak()
+
+def _exec_continue(node, scope):
+  raise _GlpythonContinue()
+
+def _exec_return(node, scope):
+  value = _glpython_eval(node.value, scope) if node.value is not None else None
+  _glpython_record(node, "exec", "return", _glpython_safe_repr(value), _glpython_current_func())
+  raise _GlpythonReturn(value)
+
+def _exec_functiondef(node, scope):
+  scope.set(node.name, _GlpythonFunction(node, scope))
+  _glpython_record(node, "exec", f"def {node.name}(...)", None, _glpython_current_func())
+
+def _exec_classdef(node, scope):
+  # Classes fall back to the real compiler for their whole body: this keeps
+  # inheritance/metaclasses/descriptors correct without hand-writing them,
+  # at the cost of the class body replaying as a single opaque step. A
+  # dedicated handler (interpreting the body statement-by-statement into a
+  # constructed type()) is a natural future extension here.
+  _glpython_fallback_exec(node, scope)
+  _glpython_record(node, "exec", f"class {node.name}", None, _glpython_current_func())
+
+def _exec_import(node, scope):
+  _glpython_fallback_exec(node, scope)
+  _glpython_record(node, "exec", _glpython_node_source(node), None, _glpython_current_func())
+
+def _exec_raise(node, scope):
+  if node.exc is None:
+    raise
+  exc_value = _glpython_eval(node.exc, scope)
+  _glpython_record(node, "exec", f"raise {_glpython_safe_repr(exc_value)}", None, _glpython_current_func())
+  if node.cause is not None:
+    cause_value = _glpython_eval(node.cause, scope)
+    raise exc_value from cause_value
+  raise exc_value
+
+def _exec_try(node, scope):
+  try:
+    _glpython_exec_stmts(node.body, scope)
+  except (_GlpythonBreak, _GlpythonContinue, _GlpythonReturn, _GlpythonTraceLimit):
+    raise
+  except BaseException as error:
+    for handler in node.handlers:
+      matches = True
+      if handler.type is not None:
+        exc_type = _glpython_eval(handler.type, scope)
+        matches = isinstance(error, exc_type) if isinstance(exc_type, type) or isinstance(exc_type, tuple) else False
+      if matches:
+        _glpython_record(node, "exec", f"except {_glpython_node_source(handler.type) if handler.type else ''}", _glpython_safe_repr(error), _glpython_current_func())
+        if handler.name:
+          scope.set(handler.name, error)
+        _glpython_exec_stmts(handler.body, scope)
+        break
+    else:
+      raise
+  else:
+    if node.orelse:
+      _glpython_exec_stmts(node.orelse, scope)
+  finally:
+    if node.finalbody:
+      _glpython_exec_stmts(node.finalbody, scope)
+
+def _exec_with(node, scope):
+  _glpython_fallback_exec(node, scope)
+  _glpython_record(node, "exec", _glpython_node_source(node), None, _glpython_current_func())
+
+def _exec_global(node, scope):
+  for name in node.names:
+    if name in _glpython_module_scope.vars:
+      scope.vars[name] = _glpython_module_scope.vars[name]
+
+def _exec_delete(node, scope):
+  for target in node.targets:
+    if isinstance(target, ast.Name) and target.id in scope.vars:
+      del scope.vars[target.id]
+
+_STMT_HANDLERS = {
+  ast.Assign: _exec_assign,
+  ast.AugAssign: _exec_augassign,
+  ast.AnnAssign: _exec_annassign,
+  ast.Expr: _exec_expr,
+  ast.Pass: _exec_pass,
+  ast.If: _exec_if,
+  ast.While: _exec_while,
+  ast.For: _exec_for,
+  ast.Break: _exec_break,
+  ast.Continue: _exec_continue,
+  ast.Return: _exec_return,
+  ast.FunctionDef: _exec_functiondef,
+  ast.ClassDef: _exec_classdef,
+  ast.Import: _exec_import,
+  ast.ImportFrom: _exec_import,
+  ast.Raise: _exec_raise,
+  ast.Try: _exec_try,
+  ast.With: _exec_with,
+  ast.Global: _exec_global,
+  ast.Delete: _exec_delete,
+}
+
+def _glpython_exec_stmt(node, scope):
+  handler = _STMT_HANDLERS.get(type(node))
+  if handler is None:
+    _glpython_fallback_exec(node, scope)
+    _glpython_record(node, "exec", _glpython_node_source(node), None, _glpython_current_func(), _glpython_snapshot_locals(scope))
+    return
+  handler(node, scope)
+
+def _glpython_exec_stmts(statements, scope):
+  for statement in statements:
+    _glpython_exec_stmt(statement, scope)
+
+# ---------------------------------------------------------------------------
+# AST preprocessing: assigns every node a stable id (shared between the trace
+# steps' "nodeId" and the AST-as-JSON tree sent to the UI) plus a short
+# human-readable summary and its exact original source text (used as the
+# step label / substituted-value placeholder text).
+# ---------------------------------------------------------------------------
+def _glpython_summary(node):
+  kind = type(node).__name__
+  try:
+    if kind == "Name":
+      return node.id
+    if kind == "Constant":
+      return _glpython_safe_repr(node.value, 40)
+    if kind in ("FunctionDef", "AsyncFunctionDef", "ClassDef"):
+      return node.name
+    if kind == "Attribute":
+      return "." + node.attr
+    if kind == "arg":
+      return node.arg
+    if kind == "Compare":
+      return "".join(_GLPYTHON_OP_SYMBOLS.get(type(op), "?") for op in node.ops)
+    if kind in ("BinOp", "BoolOp", "UnaryOp", "AugAssign"):
+      return _GLPYTHON_OP_SYMBOLS.get(type(node.op), "?")
+    if kind == "Import":
+      return ", ".join(alias.name for alias in node.names)
+    if kind == "ImportFrom":
+      return node.module or ""
+  except Exception:
+    pass
+  return ""
+
+def _glpython_preprocess(tree, source, counter):
+  for node in ast.walk(tree):
+    counter[0] += 1
+    node._glpython_id = counter[0]
+    node._glpython_summary = _glpython_summary(node)
+    try:
+      segment = ast.get_source_segment(source, node)
+    except Exception:
+      segment = None
+    node._glpython_source = segment if segment is not None else node._glpython_summary or type(node).__name__
+  # For/While loops need to tell the UI which node ids belong to their body,
+  # so that starting a fresh iteration can clear any inline value
+  # substitutions left over from the previous iteration - this is what makes
+  # the loop body visibly "reset" to its original source each time around,
+  # instead of staying stuck showing the last iteration's computed values.
+  for node in ast.walk(tree):
+    if isinstance(node, (ast.For, ast.While)):
+      body_ids = []
+      for stmt in node.body:
+        for child in ast.walk(stmt):
+          child_id = getattr(child, "_glpython_id", None)
+          if child_id is not None:
+            body_ids.append(child_id)
+      node._glpython_body_ids = body_ids
+    if isinstance(node, ast.For):
+      # Every node id inside the loop's iterable expression, so its "eval"
+      # step can be suppressed from inline substitution (see
+      # _glpython_suppress_substitution_ids) - "range(3)" must always be
+      # shown as written, never collapsed to "range(0, 3)".
+      node._glpython_iter_ids = [
+        child_id
+        for child in ast.walk(node.iter)
+        if (child_id := getattr(child, "_glpython_id", None)) is not None
+      ]
+
+def _glpython_ast_to_dict(node):
+  if isinstance(node, ast.AST):
+    entry = {"id": node._glpython_id, "type": type(node).__name__, "summary": node._glpython_summary}
+    if hasattr(node, "lineno"):
+      entry["line"] = node.lineno
+      entry["endLine"] = getattr(node, "end_lineno", node.lineno)
+      entry["col"] = node.col_offset
+      entry["endCol"] = getattr(node, "end_col_offset", node.col_offset)
+    fields = {}
+    for field_name, value in ast.iter_fields(node):
+      if isinstance(value, ast.AST):
+        fields[field_name] = _glpython_ast_to_dict(value)
+      elif isinstance(value, list):
+        fields[field_name] = [
+          _glpython_ast_to_dict(item) if isinstance(item, ast.AST) else _glpython_safe_repr(item)
+          for item in value
+        ]
+      elif value is not None:
+        fields[field_name] = _glpython_safe_repr(value)
+    entry["fields"] = fields
+    return entry
+  return _glpython_safe_repr(node)
+
+class _GlpythonCapture:
+  def __init__(self):
+    self._chunks = []
+  def write(self, text):
+    global _glpython_stdout_len
+    text = str(text)
+    self._chunks.append(text)
+    _glpython_stdout_len += len(text)
+    return len(text)
+  def flush(self):
+    pass
+  def getvalue(self):
+    return "".join(self._chunks)
+
+def _glpython_run_visual():
+  global _glpython_trace_log, _glpython_step_count, _glpython_stdout_len, _glpython_graphics_commands
+  global _glpython_module_scope, _glpython_current_path, _glpython_current_func_stack, _glpython_call_depth
+  _glpython_trace_log = []
+  _glpython_step_count = 0
+  _glpython_stdout_len = 0
+  _glpython_call_depth = 0
+  _glpython_current_func_stack = ["<module>"]
+
+  if "/" not in sys.path:
+    sys.path.insert(0, "/")
+
+  file_paths = ${JSON.stringify(pythonPaths)}
+  main_path = ${JSON.stringify(mainPath)}
+  ast_by_file = {}
+  trees = {}
+  counter = [0]
+  for path in file_paths:
+    try:
+      with open("/" + path, "r", encoding="utf-8") as handle:
+        source = handle.read()
+      tree = ast.parse(source, filename=path)
+      _glpython_preprocess(tree, source, counter)
+      trees[path] = tree
+      ast_by_file[path] = _glpython_ast_to_dict(tree)
+    except Exception as parse_error:
+      ast_by_file[path] = {"error": _glpython_safe_repr(parse_error, 300)}
+
+  import gturtle
+  _glpython_graphics_commands = gturtle.commands
+
+  capture = _GlpythonCapture()
+  sys.stdout = capture
+  sys.stderr = capture
+
+  error_text = None
+  truncated = False
+  _glpython_current_path = main_path
+  module_vars = {"__name__": "__main__", "__file__": main_path}
+  _glpython_module_scope = _GlpythonScope(module_vars, parent=None, kind="module")
+  main_tree = trees.get(main_path)
+  try:
+    if main_tree is None:
+      raise SyntaxError(f"could not parse {main_path}")
+    _glpython_exec_stmts(main_tree.body, _glpython_module_scope)
+  except _GlpythonTraceLimit:
+    truncated = True
+  except _GlpythonReturn:
+    pass
+  except BaseException as error:
+    error_text = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+
+  return json.dumps({
+    "trace": _glpython_trace_log,
+    "ast": ast_by_file,
+    "output": capture.getvalue(),
+    "graphics": gturtle.commands,
+    "error": error_text,
+    "truncated": truncated,
+  })
+
+_glpython_run_visual()
 `
+}
+
 
 self.onmessage = async (event) => {
   if (event.data.type === 'init-input-channel') {
@@ -99,30 +989,37 @@ self.onmessage = async (event) => {
     inputPayload = new Uint8Array(event.data.buffer, 8)
     return
   }
-  if (event.data.type !== 'run') return
-  try {
-    const pyodide = await getPyodide()
-    const files = event.data.project.files
-    for (const path of mountedFiles) {
-      try { pyodide.FS.unlink(`/${path}`) } catch {}
+
+  if (event.data.type === 'run') {
+    try {
+      const pyodide = await getPyodide()
+      await mountProjectFiles(pyodide, event.data.project.files)
+      let output = ''
+      pyodide.setStdout({ batched: (text) => { output += `${text}\n` } })
+      pyodide.setStderr({ batched: (text) => { output += `${text}\n` } })
+      await pyodide.runPythonAsync(inputPreamble)
+      await pyodide.runPythonAsync(`import runpy\nimport sys\nsys.path.insert(0, "/")\nrunpy.run_path(${JSON.stringify(`/${event.data.project.mainFile}`)}, run_name="__main__")`)
+      const graphicsJson = await pyodide.runPythonAsync('import json, gturtle\njson.dumps(gturtle.commands)')
+      self.postMessage({ type: 'result', output: output.trim(), graphics: JSON.parse(String(graphicsJson)) })
+    } catch (error) {
+      self.postMessage({ type: 'error', output: String(error) })
     }
-    mountedFiles = []
-    for (const [path, code] of Object.entries(files)) {
-      const directory = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
-      if (directory) pyodide.FS.mkdirTree(`/${directory}`)
-      pyodide.FS.writeFile(`/${path}`, code)
-      mountedFiles.push(path)
+    return
+  }
+
+  if (event.data.type === 'run-visual') {
+    try {
+      const pyodide = await getPyodide()
+      await mountProjectFiles(pyodide, event.data.project.files)
+      await pyodide.runPythonAsync(inputPreamble)
+      const pythonPaths = Object.keys(event.data.project.files).filter((path) => path.endsWith('.py'))
+      const resultJson = await pyodide.runPythonAsync(visualHarnessSource(event.data.project.mainFile, pythonPaths))
+      const result = JSON.parse(String(resultJson))
+      self.postMessage({ type: 'trace-result', ...result })
+    } catch (error) {
+      self.postMessage({ type: 'trace-result', trace: [], ast: {}, output: '', graphics: [], error: String(error), truncated: false })
     }
-    pyodide.FS.writeFile('/gturtle.py', turtleModule)
-    let output = ''
-    pyodide.setStdout({ batched: (text) => { output += `${text}\n` } })
-    pyodide.setStderr({ batched: (text) => { output += `${text}\n` } })
-    await pyodide.runPythonAsync(inputPreamble)
-    await pyodide.runPythonAsync(`import runpy\nimport sys\nsys.path.insert(0, "/")\nrunpy.run_path(${JSON.stringify(`/${event.data.project.mainFile}`)}, run_name="__main__")`)
-    const graphicsJson = await pyodide.runPythonAsync('import json, gturtle\njson.dumps(gturtle.commands)')
-    self.postMessage({ type: 'result', output: output.trim(), graphics: JSON.parse(String(graphicsJson)) })
-  } catch (error) {
-    self.postMessage({ type: 'error', output: String(error) })
+    return
   }
 }
 

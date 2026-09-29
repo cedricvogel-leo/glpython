@@ -73,6 +73,21 @@ export type Translation = {
   inputPlaceholder: string
   inputSubmit: string
   inputCancel: string
+  visualize: string
+  visualizing: string
+  exitVisualizer: string
+  visualizerTitle: string
+  visualizerStepOf: (current: number, total: number) => string
+  visualizerNoSteps: string
+  visualizerTruncated: string
+  visualizerRestart: string
+  visualizerPrevStep: string
+  visualizerNextStep: string
+  visualizerPlay: string
+  visualizerPause: string
+  visualizerLocals: string
+  visualizerNoLocals: string
+  visualizerError: (message: string) => string
 }
 
 export const translations: Record<Locale, Translation> = {
@@ -144,6 +159,21 @@ export const translations: Record<Locale, Translation> = {
     inputPlaceholder: 'Type your answer...',
     inputSubmit: 'Submit',
     inputCancel: 'Cancel',
+    visualize: 'Visualize',
+    visualizing: 'Visualizing...',
+    exitVisualizer: 'Exit visualizer',
+    visualizerTitle: 'Execution visualizer',
+    visualizerStepOf: (current, total) => `Step ${current} of ${total}`,
+    visualizerNoSteps: 'No steps recorded. Run a program with at least one statement first.',
+    visualizerTruncated: 'Trace stopped after too many steps (likely an infinite loop). Showing what ran so far.',
+    visualizerRestart: 'Restart',
+    visualizerPrevStep: 'Previous step',
+    visualizerNextStep: 'Next step',
+    visualizerPlay: 'Play',
+    visualizerPause: 'Pause',
+    visualizerLocals: 'Variables',
+    visualizerNoLocals: 'No variables yet.',
+    visualizerError: (message) => `Visualizer error: ${message}`,
   },
   de: {
     workspaceName: 'Klassenarbeitsbereich',
@@ -213,6 +243,21 @@ export const translations: Record<Locale, Translation> = {
     inputPlaceholder: 'Antwort eingeben...',
     inputSubmit: 'Bestätigen',
     inputCancel: 'Abbrechen',
+    visualize: 'Visualisieren',
+    visualizing: 'Visualisierung läuft...',
+    exitVisualizer: 'Visualisierung beenden',
+    visualizerTitle: 'Ausführungs-Visualisierung',
+    visualizerStepOf: (current, total) => `Schritt ${current} von ${total}`,
+    visualizerNoSteps: 'Keine Schritte aufgezeichnet. Führe zuerst ein Programm mit mindestens einer Anweisung aus.',
+    visualizerTruncated: 'Die Aufzeichnung wurde nach zu vielen Schritten gestoppt (wahrscheinlich eine Endlosschleife). Es wird gezeigt, was bisher ausgeführt wurde.',
+    visualizerRestart: 'Neu starten',
+    visualizerPrevStep: 'Vorheriger Schritt',
+    visualizerNextStep: 'Nächster Schritt',
+    visualizerPlay: 'Abspielen',
+    visualizerPause: 'Pause',
+    visualizerLocals: 'Variablen',
+    visualizerNoLocals: 'Noch keine Variablen.',
+    visualizerError: (message) => `Fehler in der Visualisierung: ${message}`,
   },
 }
 
