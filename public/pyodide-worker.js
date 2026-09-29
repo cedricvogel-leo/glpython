@@ -546,7 +546,7 @@ class _GlpythonFunction:
     finally:
       _glpython_call_depth -= 1
 
-def _eval_call(node, scope):
+def _eval_call(node, scope, suppress_none_result=False):
   func = _glpython_eval(node.func, scope)
   args = []
   for arg_node in node.args:
@@ -562,7 +562,15 @@ def _eval_call(node, scope):
       kwargs[kw.arg] = _glpython_eval(kw.value, scope)
   value = func(*args, **kwargs)
   callee_name = getattr(func, "__name__", _glpython_node_source(node.func))
-  _glpython_record(node, "eval", f"{callee_name}(...)", _glpython_safe_repr(value), _glpython_current_func())
+  # A bare "f(...)" statement whose result nobody uses shouldn't have its
+  # call text replaced with the word "None" once it finishes - that's just
+  # visual noise, not insight (this is the overwhelmingly common case for
+  # side-effecting calls like print(...) or a student function with no
+  # return). Calls whose value IS used (an assignment, part of a bigger
+  # expression, etc.) still show "None" normally, since that's genuinely
+  # useful feedback there.
+  value_text = None if (suppress_none_result and value is None) else _glpython_safe_repr(value)
+  _glpython_record(node, "eval", f"{callee_name}(...)", value_text, _glpython_current_func())
   return value
 
 def _eval_lambda(node, scope):
@@ -647,8 +655,13 @@ def _exec_annassign(node, scope):
     _glpython_record(node, "exec", f"{_glpython_node_source(node.target)} = {_glpython_safe_repr(value)}", None, _glpython_current_func(), _glpython_snapshot_locals(scope))
 
 def _exec_expr(node, scope):
-  value = _glpython_eval(node.value, scope)
-  return value
+  # A bare expression statement's value is always discarded by Python
+  # itself, so if it's a plain call ("f(...)" on its own line), tell
+  # _eval_call not to show "-> None" when that's all it computed - see the
+  # comment on _eval_call's suppress_none_result parameter.
+  if isinstance(node.value, ast.Call):
+    return _eval_call(node.value, scope, suppress_none_result=True)
+  return _glpython_eval(node.value, scope)
 
 def _exec_pass(node, scope):
   pass
