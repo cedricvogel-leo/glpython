@@ -124,7 +124,6 @@ function CallFrameBox({ frame, openFrames, nodeIndexByFile, visualSources, trace
   let cursor = 0
   return (
     <div className="call-frame-box">
-      <div className="call-frame-box-header">{frame.funcName}(...)</div>
       <div className="call-frame-box-body">
         {lines.map((line, index) => {
           const lineStart = cursor
