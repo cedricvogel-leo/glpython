@@ -8,7 +8,7 @@
 // stable id embedded in the AST-as-JSON tree - so the UI can substitute that
 // node's original source with the step's computed value inline.
 
-export type TraceStepKind = 'eval' | 'exec' | 'branch' | 'loop-iter'
+export type TraceStepKind = 'eval' | 'exec' | 'branch' | 'loop-iter' | 'call-enter'
 
 export type TraceStep = {
   step: number
@@ -40,6 +40,25 @@ export type TraceStep = {
   // leaving "range(3)" completely untouched.
   annotateNodeId: number | null
   annotateText: string | null
+  // Which call frame this step executed in (0 = module scope). Lets the UI
+  // isolate exactly the steps belonging to one open function-call box, even
+  // across recursive calls that reuse the same AST nodes.
+  frameId: number
+  // Only present on "call-enter" steps (the moment a user-defined function
+  // starts running): the frame that opened, its caller's frame, the
+  // FunctionDef node whose source is the box's content, which file that
+  // def lives in, and the "=value" annotations to show next to each bound
+  // parameter name in the box's header (same mechanism as loop-variable
+  // annotations).
+  parentFrameId: number | null
+  funcDefNodeId: number | null
+  funcDefPath: string | null
+  paramAnnotations: Array<[number, string]>
+  // Only present on the "eval" step of a Call node that just finished
+  // running a user-defined function: the frame id that just closed, so the
+  // UI knows this is the step where that frame's box collapses into this
+  // step's own substituted return value.
+  closesFrameId: number | null
 }
 
 export type AstNode = {
@@ -108,11 +127,20 @@ export type AnnotationState = Map<string, Map<number, string>>
 // makes a loop body visibly "reset" to its original source at the start of
 // every iteration instead of staying stuck showing the previous iteration's
 // substituted values.
-export function buildSubstitutionsUpTo(trace: TraceStep[], uptoStep: number): SubstitutionState {
+//
+// `frameId` scopes the replay to steps that executed in exactly one call
+// frame (0 = module scope). This is what keeps recursive/nested calls from
+// clobbering each other's displayed values even though they share the exact
+// same AST node ids: each invocation's own steps are tagged with its own
+// unique frame id (see public/pyodide-worker.js), so filtering by frame id
+// isolates "this specific call's" substitutions from any other open call to
+// the same function.
+export function buildSubstitutionsUpTo(trace: TraceStep[], uptoStep: number, frameId = 0): SubstitutionState {
   const state: SubstitutionState = new Map()
 
   for (const step of trace) {
     if (step.step > uptoStep) break
+    if (step.frameId !== frameId) continue
 
     if (step.kind === 'loop-iter' && step.resetNodeIds?.length) {
       const byNode = state.get(step.path)
@@ -134,12 +162,14 @@ export function buildSubstitutionsUpTo(trace: TraceStep[], uptoStep: number): Su
 }
 
 // Replays the trace up to (and including) `uptoStep`, producing the
-// loop-variable annotation state (see AnnotationState) to render.
-export function buildAnnotationsUpTo(trace: TraceStep[], uptoStep: number): AnnotationState {
+// loop-variable annotation state (see AnnotationState) to render, scoped to
+// one call frame (see buildSubstitutionsUpTo).
+export function buildAnnotationsUpTo(trace: TraceStep[], uptoStep: number, frameId = 0): AnnotationState {
   const state: AnnotationState = new Map()
 
   for (const step of trace) {
     if (step.step > uptoStep) break
+    if (step.frameId !== frameId) continue
     if (step.kind !== 'loop-iter' || step.annotateNodeId === null || step.annotateText === null) continue
 
     let byNode = state.get(step.path)
@@ -151,6 +181,54 @@ export function buildAnnotationsUpTo(trace: TraceStep[], uptoStep: number): Anno
   }
 
   return state
+}
+
+// One user-defined function call whose box is (or was, up to the replayed
+// step) open: which frame it is, where its call site is (the box's anchor
+// position), and where its own def's source lives (the box's content).
+export type OpenFrame = {
+  frameId: number
+  parentFrameId: number
+  funcName: string
+  // Call site (in the *caller's* file) the box is anchored at.
+  anchorPath: string
+  anchorNodeId: number
+  // Where the "def ...:" itself lives - may be a different file than the
+  // call site (e.g. calling into an imported module).
+  funcDefPath: string
+  funcDefNodeId: number
+  paramAnnotations: Array<[number, string]>
+}
+
+// Replays the trace up to (and including) `uptoStep`, returning every call
+// frame that is still "open" at that point (i.e. its call-enter step has
+// been reached but the step that closes it has not), keyed by frame id.
+// Frame 0 (module scope) is never included - it's always implicitly open.
+export function computeOpenFramesUpTo(trace: TraceStep[], uptoStep: number): Map<number, OpenFrame> {
+  const open = new Map<number, OpenFrame>()
+
+  for (const step of trace) {
+    if (step.step > uptoStep) break
+
+    if (step.kind === 'call-enter' && step.funcDefNodeId !== null && step.funcDefPath !== null) {
+      open.set(step.frameId, {
+        frameId: step.frameId,
+        parentFrameId: step.parentFrameId ?? 0,
+        funcName: step.func,
+        anchorPath: step.path,
+        anchorNodeId: step.nodeId,
+        funcDefPath: step.funcDefPath,
+        funcDefNodeId: step.funcDefNodeId,
+        paramAnnotations: step.paramAnnotations ?? [],
+      })
+    }
+
+    if (step.closesFrameId !== null && step.closesFrameId !== undefined) {
+      open.delete(step.closesFrameId)
+    }
+  }
+
+  return open
 }
 
 // Absolute character offset (into the whole source string) of the start of
@@ -165,7 +243,7 @@ export function computeLineOffsets(source: string): number[] {
   return offsets
 }
 
-function nodeRange(node: AstNode, lineOffsets: number[]): { start: number; end: number } | null {
+export function nodeRange(node: AstNode, lineOffsets: number[]): { start: number; end: number } | null {
   if (node.line === undefined || node.endLine === undefined || node.col === undefined || node.endCol === undefined) return null
   const start = (lineOffsets[node.line - 1] ?? 0) + node.col
   const end = (lineOffsets[node.endLine - 1] ?? 0) + node.endCol
@@ -181,17 +259,21 @@ function nodeRange(node: AstNode, lineOffsets: number[]): { start: number; end: 
 // applied - the inner one is naturally superseded once the outer node's own
 // step fires, which is exactly what produces the requested one-step-at-a-
 // time collapse (`2 + 3 * 4` -> `2 + 12` -> `14`).
-export function applySubstitutions(
+type MergedInsert = { start: number; end: number; value: string; kind: 'substitution' | 'annotation' | 'spacer' }
+
+// Shared by applySubstitutions and locateNodeRenderedRange: the sorted list
+// of every text replacement/insert that would be spliced into `source`,
+// without actually building the resulting string yet - so both "produce the
+// rendered text" and "find where some other node's span ends up in that
+// rendered text" can walk the exact same splice plan.
+function buildMergedInserts(
   source: string,
   lineOffsets: number[],
   nodeIndex: Map<number, AstNode>,
   substitutions: Map<number, string> | undefined,
-  annotations?: Map<number, string>,
-): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number }> } {
-  if ((!substitutions || substitutions.size === 0) && (!annotations || annotations.size === 0)) {
-    return { text: source, highlights: [], annotationHighlights: [] }
-  }
-
+  annotations: Map<number, string> | undefined,
+  spacers: Map<number, number> | undefined,
+): MergedInsert[] {
   const candidates: Array<{ start: number; end: number; value: string }> = []
   for (const [nodeId, value] of substitutions ?? []) {
     const node = nodeIndex.get(nodeId)
@@ -205,10 +287,10 @@ export function applySubstitutions(
   // descendant node whose span it fully covers.
   candidates.sort((a, b) => (b.end - b.start) - (a.end - a.start))
 
-  const selected: Array<{ start: number; end: number; value: string; isAnnotation: false }> = []
+  const selected: Array<{ start: number; end: number; value: string }> = []
   for (const candidate of candidates) {
     const overlapsSelected = selected.some((s) => candidate.start >= s.start && candidate.end <= s.end)
-    if (!overlapsSelected) selected.push({ ...candidate, isAnnotation: false })
+    if (!overlapsSelected) selected.push(candidate)
   }
 
   // Annotations are zero-width inserts placed right after their node's
@@ -217,7 +299,7 @@ export function applySubstitutions(
   // hidden. Skip any annotation whose position falls inside a substituted
   // span, since that source text isn't visible to attach the annotation to
   // anymore.
-  const inserts: Array<{ start: number; end: number; value: string; isAnnotation: true }> = []
+  const inserts: Array<{ start: number; end: number; value: string; kind: 'annotation' | 'spacer' }> = []
   for (const [nodeId, text] of annotations ?? []) {
     const node = nodeIndex.get(nodeId)
     if (!node) continue
@@ -225,24 +307,133 @@ export function applySubstitutions(
     if (!range) continue
     const hiddenBySubstitution = selected.some((s) => range.end > s.start && range.end < s.end)
     if (hiddenBySubstitution) continue
-    inserts.push({ start: range.end, end: range.end, value: text, isAnnotation: true })
+    inserts.push({ start: range.end, end: range.end, value: text, kind: 'annotation' })
+  }
+  // Spacers are placed the same way (right after their node's own span),
+  // but never produce a highlight - they're plain space characters, not a
+  // computed value or label.
+  for (const [nodeId, count] of spacers ?? []) {
+    if (count <= 0) continue
+    const node = nodeIndex.get(nodeId)
+    if (!node) continue
+    const range = nodeRange(node, lineOffsets)
+    if (!range) continue
+    inserts.push({ start: range.end, end: range.end, value: ' '.repeat(count), kind: 'spacer' })
   }
 
-  const merged = [...selected, ...inserts].sort((a, b) => a.start - b.start || (a.isAnnotation ? 1 : -1))
+  return [
+    ...selected.map((s) => ({ ...s, kind: 'substitution' as const })),
+    ...inserts,
+  ].sort((a, b) => a.start - b.start || (a.kind === 'substitution' ? -1 : 1))
+}
+
+// Maps one offset in the *original* source to where it ends up in the
+// rendered text produced by splicing in `merged`'s inserts. Only valid for
+// offsets that don't fall strictly inside a splice's original span (true
+// for any AST node's own start/end as long as that exact node isn't itself
+// being substituted - its descendants being substituted is fine).
+function locateOffset(merged: MergedInsert[], offset: number): number {
+  let cursor = 0
+  let renderedLen = 0
+  for (const item of merged) {
+    if (item.start >= offset) break
+    renderedLen += (item.start - cursor) + item.value.length
+    cursor = item.end
+  }
+  return renderedLen + (offset - cursor)
+}
+
+// Finds where `node`'s own span (untouched, i.e. assuming `node` itself is
+// not among the substituted nodes) ends up in the text applySubstitutions
+// would produce for the same source/substitutions/annotations - e.g. so a
+// call-frame box can be positioned exactly where its call site's `fact(2)`
+// text sits within its *parent* frame's already-substituted rendering, in
+// order to render the nested box inline there instead of the plain text.
+export function locateNodeRenderedRange(
+  source: string,
+  lineOffsets: number[],
+  nodeIndex: Map<number, AstNode>,
+  substitutions: Map<number, string> | undefined,
+  annotations: Map<number, string> | undefined,
+  node: AstNode,
+): { start: number; end: number } | null {
+  const range = nodeRange(node, lineOffsets)
+  if (!range) return null
+  const merged = buildMergedInserts(source, lineOffsets, nodeIndex, substitutions, annotations, undefined)
+  return { start: locateOffset(merged, range.start), end: locateOffset(merged, range.end) }
+}
+
+export function applySubstitutions(
+  source: string,
+  lineOffsets: number[],
+  nodeIndex: Map<number, AstNode>,
+  substitutions: Map<number, string> | undefined,
+  annotations?: Map<number, string>,
+  // Extra invisible-content inserts, keyed by node id -> a count of plain
+  // space characters to splice in right after that node's own span (used
+  // to reserve room, in real document text, for a call-frame box floating
+  // at that node's call site - see boxWidgetsRef in App.tsx). These never
+  // produce highlights of their own, unlike substitutions/annotations.
+  spacers?: Map<number, number>,
+): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number }> } {
+  if ((!substitutions || substitutions.size === 0) && (!annotations || annotations.size === 0) && (!spacers || spacers.size === 0)) {
+    return { text: source, highlights: [], annotationHighlights: [] }
+  }
+
+  const merged = buildMergedInserts(source, lineOffsets, nodeIndex, substitutions, annotations, spacers)
 
   let text = ''
   let cursor = 0
   const highlights: Array<{ start: number; end: number }> = []
   const annotationHighlights: Array<{ start: number; end: number }> = []
-  for (const { start, end, value, isAnnotation } of merged) {
+  for (const { start, end, value, kind } of merged) {
     if (start < cursor) continue
     text += source.slice(cursor, start)
     const highlightStart = text.length
     text += value
-    ;(isAnnotation ? annotationHighlights : highlights).push({ start: highlightStart, end: text.length })
+    if (kind === 'substitution') highlights.push({ start: highlightStart, end: text.length })
+    else if (kind === 'annotation') annotationHighlights.push({ start: highlightStart, end: text.length })
     cursor = end
   }
   text += source.slice(cursor)
 
   return { text, highlights, annotationHighlights }
+}
+
+// Like applySubstitutions, but clips the result down to just one AST node's
+// own span (used to render a call-frame's box: only the "def foo(...):"
+// node's own text, not the rest of the file it lives in).
+//
+// This works by running the normal whole-file substitution pass and then
+// trimming the result down, rather than re-implementing the splicing logic
+// on a pre-sliced string, which is what makes it safe: as long as every
+// substitution/annotation passed in belongs to a node *inside* `clipNode`'s
+// span (true here, since callers scope them to one call frame - see
+// buildSubstitutionsUpTo's `frameId` parameter - and a frame's own steps
+// can only ever touch nodes inside its own function body), the text before
+// clipNode's start and after its end is guaranteed untouched/same-length in
+// the rendered output, so the original character offsets still line up.
+export function renderFrameSource(
+  source: string,
+  lineOffsets: number[],
+  nodeIndex: Map<number, AstNode>,
+  clipNode: AstNode,
+  substitutions: Map<number, string> | undefined,
+  annotations: Map<number, string> | undefined,
+): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number }> } | null {
+  const clipRange = nodeRange(clipNode, lineOffsets)
+  if (!clipRange) return null
+
+  const { text, highlights, annotationHighlights } = applySubstitutions(source, lineOffsets, nodeIndex, substitutions, annotations)
+
+  const tailLength = source.length - clipRange.end
+  const clippedEnd = text.length - tailLength
+  const inClip = (r: { start: number; end: number }) => r.start >= clipRange.start && r.end <= clippedEnd
+  const shift = (r: { start: number; end: number }) => ({ start: r.start - clipRange.start, end: r.end - clipRange.start })
+
+  return {
+    text: text.slice(clipRange.start, clippedEnd),
+    highlights: highlights.filter(inClip).map(shift),
+    annotationHighlights: annotationHighlights.filter(inClip).map(shift),
+  }
 }

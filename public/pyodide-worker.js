@@ -255,13 +255,36 @@ _GLPYTHON_MAX_CALL_DEPTH = 200
 # own annotation that communicates the current value instead).
 _glpython_suppress_substitution_ids = set()
 
+# Call-frame tracking, used to render a boxed "def foo(a=1):" frame at a
+# user-defined function's call site (instead of jumping the highlight to its
+# definition elsewhere in the file). Every frame gets a unique, ever-
+# increasing id (module scope is frame 0); _glpython_frame_stack is the
+# current call chain of frame ids, and every recorded step automatically
+# tags itself with the frame it executed in (see _glpython_record), so the
+# UI can later filter "just this frame's steps" to render its box content
+# and figure out which frames are still open at any point in the trace.
+_glpython_frame_id_counter = 0
+_glpython_frame_stack = [0]
+# Set by _eval_call immediately before invoking a callable, and consumed
+# (read once, then cleared) by _GlpythonFunction.__call__ so it can anchor
+# its call-enter step at the exact Call node - this only works because
+# execution is single-threaded and synchronous, so no other call can be
+# "in flight" between the two. Left as None for anything that isn't a
+# _GlpythonFunction (builtins never read it), and cleared before it could
+# ever be misattributed to some unrelated inner call the builtin makes.
+_glpython_pending_call_node = None
+# Set by _GlpythonFunction.__call__ right before it returns, so _eval_call
+# can tag its own closing "eval" step with the frame id that just finished -
+# this is what lets the UI know exactly which step collapses which box.
+_glpython_last_call_frame_id = None
+
 class _GlpythonCallDepthExceeded(Exception):
   pass
 
 def _glpython_pos(node):
   return (getattr(node, "lineno", None), getattr(node, "end_lineno", None), getattr(node, "col_offset", None), getattr(node, "end_col_offset", None))
 
-def _glpython_record(node, kind, label, value_text=None, func_name="<module>", extra_locals=None, reset_node_ids=None, annotate_node_id=None, annotate_text=None):
+def _glpython_record(node, kind, label, value_text=None, func_name="<module>", extra_locals=None, reset_node_ids=None, annotate_node_id=None, annotate_text=None, closes_frame_id=None):
   global _glpython_step_count
   if getattr(node, "_glpython_id", None) in _glpython_suppress_substitution_ids:
     value_text = None
@@ -288,6 +311,52 @@ def _glpython_record(node, kind, label, value_text=None, func_name="<module>", e
     "resetNodeIds": reset_node_ids or [],
     "annotateNodeId": annotate_node_id,
     "annotateText": annotate_text,
+    # Which call frame this step executed in (0 = module scope) - see the
+    # call-frame tracking globals above.
+    "frameId": _glpython_frame_stack[-1],
+    "parentFrameId": None,
+    "funcDefNodeId": None,
+    "funcDefPath": None,
+    "paramAnnotations": [],
+    # Set only on the "eval" step of a Call node that just finished running
+    # a user-defined function - tells the UI which frame's box just closed
+    # and should collapse to this step's substituted return value.
+    "closesFrameId": closes_frame_id,
+  }
+  _glpython_trace_log.append(entry)
+  _glpython_step_count += 1
+
+def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_frame_id, extra_locals, param_annotations):
+  global _glpython_step_count
+  if _glpython_step_count >= _GLPYTHON_MAX_STEPS:
+    raise _GlpythonTraceLimit()
+  line, end_line, col, end_col = _glpython_pos(call_node)
+  if line is None:
+    return
+  entry = {
+    "step": _glpython_step_count,
+    "path": _glpython_current_path,
+    "func": glpython_function.__name__,
+    "line": line,
+    "endLine": end_line if end_line is not None else line,
+    "col": col if col is not None else 0,
+    "endCol": end_col if end_col is not None else 0,
+    "kind": "call-enter",
+    "label": f"def {glpython_function.__name__}(...)",
+    "nodeId": getattr(call_node, "_glpython_id", None),
+    "valueText": None,
+    "locals": extra_locals or {},
+    "stdoutLen": _glpython_stdout_len,
+    "graphicsLen": len(_glpython_graphics_commands) if _glpython_graphics_commands is not None else 0,
+    "resetNodeIds": [],
+    "annotateNodeId": None,
+    "annotateText": None,
+    "frameId": frame_id,
+    "parentFrameId": parent_frame_id,
+    "funcDefNodeId": getattr(glpython_function.node, "_glpython_id", None),
+    "funcDefPath": glpython_function.def_path,
+    "paramAnnotations": param_annotations or [],
+    "closesFrameId": None,
   }
   _glpython_trace_log.append(entry)
   _glpython_step_count += 1
@@ -507,13 +576,23 @@ class _GlpythonFunction:
     self.node = node
     self.closure_scope = closure_scope
     self.__name__ = name or node.name
+    # The file this "def" itself lives in, so a call-enter step recorded at
+    # the *call site* (possibly in a different file, e.g. calling into an
+    # imported module) can still tell the UI where to find the function's
+    # own source for its box content.
+    self.def_path = _glpython_current_path
 
   def __call__(self, *args, **kwargs):
-    global _glpython_call_depth
+    global _glpython_call_depth, _glpython_frame_id_counter, _glpython_pending_call_node, _glpython_last_call_frame_id
+    # Consumed immediately, before anything else can overwrite it - see the
+    # comment on _glpython_pending_call_node above.
+    call_node = _glpython_pending_call_node
+    _glpython_pending_call_node = None
     _glpython_call_depth += 1
     if _glpython_call_depth > _GLPYTHON_MAX_CALL_DEPTH:
       _glpython_call_depth -= 1
       raise RecursionError("maximum interpreted recursion depth exceeded")
+    frame_id = None
     try:
       call_vars = {}
       arguments = self.node.args
@@ -536,6 +615,18 @@ class _GlpythonFunction:
         call_vars[arguments.kwarg.arg] = {k: v for k, v in kwargs.items() if k not in positional_names}
       scope = _glpython_make_function_scope(call_vars)
       _glpython_current_func_stack.append(self.__name__)
+      if call_node is not None:
+        _glpython_frame_id_counter += 1
+        frame_id = _glpython_frame_id_counter
+        parent_frame_id = _glpython_frame_stack[-1]
+        _glpython_frame_stack.append(frame_id)
+        param_annotations = []
+        for arg_node in arguments.args:
+          if arg_node.arg in call_vars:
+            arg_id = getattr(arg_node, "_glpython_id", None)
+            if arg_id is not None:
+              param_annotations.append([arg_id, "=" + _glpython_safe_repr(call_vars[arg_node.arg])])
+        _glpython_record_call_enter(call_node, self, frame_id, parent_frame_id, _glpython_snapshot_locals(scope), param_annotations)
       try:
         _glpython_exec_stmts(self.node.body, scope)
         return None
@@ -543,10 +634,14 @@ class _GlpythonFunction:
         return ret.value
       finally:
         _glpython_current_func_stack.pop()
+        if call_node is not None:
+          _glpython_frame_stack.pop()
     finally:
+      _glpython_last_call_frame_id = frame_id
       _glpython_call_depth -= 1
 
 def _eval_call(node, scope, suppress_none_result=False):
+  global _glpython_pending_call_node, _glpython_last_call_frame_id
   func = _glpython_eval(node.func, scope)
   args = []
   for arg_node in node.args:
@@ -560,7 +655,11 @@ def _eval_call(node, scope, suppress_none_result=False):
       kwargs.update(_glpython_eval(kw.value, scope))
     else:
       kwargs[kw.arg] = _glpython_eval(kw.value, scope)
+  _glpython_pending_call_node = node
+  _glpython_last_call_frame_id = None
   value = func(*args, **kwargs)
+  closes_frame_id = _glpython_last_call_frame_id
+  _glpython_pending_call_node = None
   callee_name = getattr(func, "__name__", _glpython_node_source(node.func))
   # A bare "f(...)" statement whose result nobody uses shouldn't have its
   # call text replaced with the word "None" once it finishes - that's just
@@ -570,7 +669,7 @@ def _eval_call(node, scope, suppress_none_result=False):
   # expression, etc.) still show "None" normally, since that's genuinely
   # useful feedback there.
   value_text = None if (suppress_none_result and value is None) else _glpython_safe_repr(value)
-  _glpython_record(node, "eval", f"{callee_name}(...)", value_text, _glpython_current_func())
+  _glpython_record(node, "eval", f"{callee_name}(...)", value_text, _glpython_current_func(), closes_frame_id=closes_frame_id)
   return value
 
 def _eval_lambda(node, scope):
@@ -933,11 +1032,16 @@ class _GlpythonCapture:
 def _glpython_run_visual():
   global _glpython_trace_log, _glpython_step_count, _glpython_stdout_len, _glpython_graphics_commands
   global _glpython_module_scope, _glpython_current_path, _glpython_current_func_stack, _glpython_call_depth
+  global _glpython_frame_id_counter, _glpython_frame_stack, _glpython_pending_call_node, _glpython_last_call_frame_id
   _glpython_trace_log = []
   _glpython_step_count = 0
   _glpython_stdout_len = 0
   _glpython_call_depth = 0
   _glpython_current_func_stack = ["<module>"]
+  _glpython_frame_id_counter = 0
+  _glpython_frame_stack = [0]
+  _glpython_pending_call_node = None
+  _glpython_last_call_frame_id = None
 
   if "/" not in sys.path:
     sys.path.insert(0, "/")

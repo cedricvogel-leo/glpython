@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import Editor from '@monaco-editor/react'
 import type { Monaco, OnMount } from '@monaco-editor/react'
 import type { editor as MonacoEditorNS } from 'monaco-editor'
@@ -10,8 +11,153 @@ import type { AccountInfo } from '@azure/msal-browser'
 import { clearLocalProject, exportProjectZip, importProjectFolder, importProjectZip, loadLocalProject, saveLocalProject } from './projectStorage'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
 import { detectLocale, localeNames, saveLocale, translations, type Locale } from './i18n'
-import { applySubstitutions, buildAnnotationsUpTo, buildSubstitutionsUpTo, computeLineOffsets, indexAstNodes, type TraceResult } from './visualizer'
+import { applySubstitutions, buildAnnotationsUpTo, buildSubstitutionsUpTo, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, locateNodeRenderedRange, nodeRange, renderFrameSource, type AstNode, type OpenFrame, type TraceResult, type TraceStep } from './visualizer'
 import './App.css'
+
+// One highlighted (or plain) run of text within a single rendered line of a
+// call-frame box - the plain-DOM equivalent of the inline decorations the
+// main Monaco editor gets via deltaDecorations, since a box's content isn't
+// a real Monaco model. A 'child' segment replaces its call site's own text
+// entirely with a further-nested <CallFrameBox>, rendered inline exactly
+// where that text sat (see childRanges in buildLineSegments below).
+type LineSegment =
+  | { kind: 'text'; text: string; className?: string }
+  | { kind: 'child'; frame: OpenFrame }
+
+function buildLineSegments(
+  line: string,
+  lineStart: number,
+  highlights: Array<{ start: number; end: number }>,
+  annotationHighlights: Array<{ start: number; end: number }>,
+  childRanges: Array<{ start: number; end: number; frame: OpenFrame }>,
+): LineSegment[] {
+  const lineEnd = lineStart + line.length
+  // A child's own call-site range replaces its text wholesale, so any
+  // highlight/annotation mark that falls entirely inside one (e.g. the
+  // substituted "2" inside "fact(2)", while that call itself is still open
+  // and rendered as a nested box, not yet collapsed into a plain value) is
+  // dropped here - otherwise it would be re-inserted as leftover text after
+  // the child segment already consumed that whole range.
+  const insideChild = (start: number, end: number) => childRanges.some((c) => start >= c.start && end <= c.end)
+  const marks: Array<{ start: number; end: number; className?: string; frame?: OpenFrame }> = []
+  for (const h of highlights) {
+    if (insideChild(h.start, h.end)) continue
+    const start = Math.max(h.start, lineStart)
+    const end = Math.min(h.end, lineEnd)
+    if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, className: 'visual-substituted-value' })
+  }
+  for (const h of annotationHighlights) {
+    if (insideChild(h.start, h.end)) continue
+    const start = Math.max(h.start, lineStart)
+    const end = Math.min(h.end, lineEnd)
+    if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, className: 'visual-loop-annotation' })
+  }
+  for (const c of childRanges) {
+    const start = Math.max(c.start, lineStart)
+    const end = Math.min(c.end, lineEnd)
+    if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, frame: c.frame })
+  }
+  marks.sort((a, b) => a.start - b.start)
+
+  const segments: LineSegment[] = []
+  let cursor = 0
+  for (const mark of marks) {
+    if (mark.start > cursor) segments.push({ kind: 'text', text: line.slice(cursor, mark.start) })
+    if (mark.frame) segments.push({ kind: 'child', frame: mark.frame })
+    else segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className: mark.className })
+    cursor = mark.end
+  }
+  if (cursor < line.length || segments.length === 0) segments.push({ kind: 'text', text: line.slice(cursor) })
+  return segments
+}
+
+type CallFrameBoxProps = {
+  frame: OpenFrame
+  openFrames: Map<number, OpenFrame>
+  nodeIndexByFile: Map<string, Map<number, AstNode>>
+  visualSources: Record<string, string>
+  trace: TraceStep[]
+  uptoStep: number
+  currentStep: TraceStep | null
+}
+
+// Renders one open user-defined function call as a boxed frame anchored at
+// its call site: a "def foo(a=3, b=4):" header (with bound-parameter values
+// annotated, same mechanism as loop-variable annotations) followed by its
+// body, with its own current-line highlight and its own substituted values -
+// all scoped to this exact invocation via its unique frame id, so recursive
+// calls to the same function never mix up each other's displayed state.
+// Any further-nested open call inside this frame's body renders its own
+// box recursively, right after the line that calls it.
+function CallFrameBox({ frame, openFrames, nodeIndexByFile, visualSources, trace, uptoStep, currentStep }: CallFrameBoxProps) {
+  const nodeIndex = nodeIndexByFile.get(frame.funcDefPath)
+  const source = visualSources[frame.funcDefPath]
+  const defNode = nodeIndex?.get(frame.funcDefNodeId)
+  if (!nodeIndex || source === undefined || !defNode || defNode.line === undefined) return null
+
+  const lineOffsets = computeLineOffsets(source)
+  const defRange = nodeRange(defNode, lineOffsets)
+  const substitutions = buildSubstitutionsUpTo(trace, uptoStep, frame.frameId).get(frame.funcDefPath)
+  const annotations = new Map(buildAnnotationsUpTo(trace, uptoStep, frame.frameId).get(frame.funcDefPath) ?? [])
+  for (const [nodeId, text] of frame.paramAnnotations) annotations.set(nodeId, text)
+
+  const rendered = renderFrameSource(source, lineOffsets, nodeIndex, defNode, substitutions, annotations)
+  if (!rendered || !defRange) return null
+
+  const children = [...openFrames.values()].filter((f) => f.parentFrameId === frame.frameId)
+  const isFrameActive = currentStep?.frameId === frame.frameId
+
+  // Every further-nested open call inside this frame's own body, mapped to
+  // where its own call-site text (e.g. "fact(2)") ends up within this
+  // frame's *own* rendered text (already-clipped to defNode's span, exactly
+  // matching rendered.text's coordinates) - so it can be spliced inline,
+  // replacing that text, instead of appended as a separate row below it.
+  const childRanges = children.flatMap((child) => {
+    const anchorNode = child.anchorPath === frame.funcDefPath ? nodeIndex.get(child.anchorNodeId) : undefined
+    if (!anchorNode) return []
+    const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, anchorNode)
+    if (!range) return []
+    return [{ start: range.start - defRange.start, end: range.end - defRange.start, frame: child }]
+  })
+
+  const lines = rendered.text.split('\n')
+  let cursor = 0
+  return (
+    <div className="call-frame-box">
+      <div className="call-frame-box-header">{frame.funcName}(...)</div>
+      <div className="call-frame-box-body">
+        {lines.map((line, index) => {
+          const lineStart = cursor
+          cursor += line.length + 1
+          const absoluteLine = (defNode.line ?? 1) + index
+          const isCurrentLine = isFrameActive && currentStep?.line === absoluteLine
+          const segments = buildLineSegments(line, lineStart, rendered.highlights, rendered.annotationHighlights, childRanges)
+          return (
+            <div key={index}>
+              <div className={`call-frame-line${isCurrentLine ? ' visual-current-line' : ''}`}>
+                {segments.map((segment, segmentIndex) => segment.kind === 'child' ? (
+                  <span key={segmentIndex} className="call-frame-zone">
+                    <CallFrameBox
+                      frame={segment.frame}
+                      openFrames={openFrames}
+                      nodeIndexByFile={nodeIndexByFile}
+                      visualSources={visualSources}
+                      trace={trace}
+                      uptoStep={uptoStep}
+                      currentStep={currentStep}
+                    />
+                  </span>
+                ) : (
+                  <span key={segmentIndex} className={segment.className}>{segment.text}</span>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 function App() {
   const [locale, setLocale] = useState<Locale>(() => detectLocale())
@@ -41,6 +187,31 @@ function App() {
   const visualEditorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
   const visualMonacoRef = useRef<Monaco | null>(null)
   const visualDecorationsRef = useRef<string[]>([])
+  // One Monaco content widget + React root per top-level open call-frame
+  // box currently anchored in the visible file, keyed by frame id, so boxes
+  // can be added/updated/removed incrementally as the trace steps forward
+  // instead of tearing everything down on every render. Content widgets
+  // (rather than view zones) are what let a box render exactly at its call
+  // site's position - inline, floating to the right of it - instead of as
+  // a separate full-width row pushed below the line. Each entry's
+  // ResizeObserver keeps frameSpacerChars (below) in sync as the box's own
+  // content grows or shrinks.
+  const boxWidgetsRef = useRef<Map<number, { widget: MonacoEditorNS.IContentWidget; root: Root; domNode: HTMLDivElement; observer: ResizeObserver; zoneId: string | null; zoneObj: MonacoEditorNS.IViewZone | null; zoneDomNode: HTMLDivElement }>>(new Map())
+  // Decorations that hide each open call's own call-site text (its width is
+  // preserved via visibility:hidden, so anything after it on the same line,
+  // e.g. " * 2", keeps its original column) while its box floats over it.
+  const callSiteHideDecorationsRef = useRef<string[]>([])
+  // A box is almost always wider than the call text it floats over, so
+  // trailing code on the same line (" * 2") would otherwise end up hidden
+  // underneath it. Each open call's anchor node gets this many literal
+  // space characters spliced into the *rendered text itself* right after
+  // its own span (see applySubstitutions' `spacers` param), pushing any
+  // trailing code on that line out to the right, clear of the floating
+  // box - real characters, rather than a decoration, since Monaco's
+  // injected-text (before/after) decorations don't render in this build.
+  // Kept as state (not a ref) since changing it must re-run the
+  // renderedActiveSource memo below to regenerate the editor's value.
+  const [frameSpacerChars, setFrameSpacerChars] = useState<Map<number, number>>(new Map())
   const inputChannelRef = useRef<{ control: Int32Array; payload: Uint8Array } | null>(null)
   const selectedFile = project.files[activeFile] ?? project.files[project.mainFile]
 
@@ -237,21 +408,34 @@ function App() {
     if (source === undefined) return null
     const offsets = computeLineOffsets(source)
     const nodeIndex = astIndexByFile.get(currentTraceStep.path) ?? new Map()
-    return applySubstitutions(source, offsets, nodeIndex, substitutions.get(currentTraceStep.path), annotations.get(currentTraceStep.path))
-  }, [currentTraceStep, visualSources, astIndexByFile, substitutions, annotations])
+    return applySubstitutions(
+      source,
+      offsets,
+      nodeIndex,
+      substitutions.get(currentTraceStep.path),
+      annotations.get(currentTraceStep.path),
+      frameSpacerChars,
+    )
+  }, [currentTraceStep, visualSources, astIndexByFile, substitutions, annotations, frameSpacerChars])
 
   // Keep the open tab in sync with whichever file the trace is currently
-  // executing in (e.g. stepping into an imported project file).
+  // executing in at module scope (e.g. an import's own top-level code) -
+  // but never for code running inside a boxed function call, since that
+  // now renders inline as a box at its call site instead of jumping the
+  // view away to wherever it's defined.
   useEffect(() => {
-    if (!currentTraceStep) return
+    if (!currentTraceStep || currentTraceStep.frameId !== 0) return
     if (!project.files[currentTraceStep.path]) return
     setActiveFile(currentTraceStep.path)
     setOpenFiles((currentFiles) => currentFiles.includes(currentTraceStep.path) ? currentFiles : [...currentFiles, currentTraceStep.path])
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTraceStep?.path])
+  }, [currentTraceStep?.path, currentTraceStep?.frameId])
 
   // Highlight the currently executing line, and the substituted value spans,
-  // directly in the Monaco editor whenever the visible step changes.
+  // directly in the Monaco editor whenever the visible step changes. Only
+  // shown while execution is at module scope in this file - while inside a
+  // boxed call, the current-line highlight instead appears inside that
+  // call's own box (see CallFrameBox).
   useEffect(() => {
     const editorInstance = visualEditorRef.current
     const monaco = visualMonacoRef.current
@@ -261,12 +445,13 @@ function App() {
     }
     const model = editorInstance.getModel()
     if (!model) return
-    const decorations: MonacoEditorNS.IModelDeltaDecoration[] = [
-      {
+    const decorations: MonacoEditorNS.IModelDeltaDecoration[] = []
+    if (currentTraceStep.frameId === 0 && currentTraceStep.path === activeFile) {
+      decorations.push({
         range: new monaco.Range(currentTraceStep.line, 1, currentTraceStep.line, 1),
         options: { isWholeLine: true, className: 'visual-current-line', linesDecorationsClassName: 'visual-current-line-margin' },
-      },
-    ]
+      })
+    }
     for (const { start, end } of renderedActiveSource.highlights) {
       const startPos = model.getPositionAt(start)
       const endPos = model.getPositionAt(end)
@@ -284,7 +469,156 @@ function App() {
       })
     }
     visualDecorationsRef.current = editorInstance.deltaDecorations(visualDecorationsRef.current, decorations)
-  }, [isVisualizing, currentTraceStep, renderedActiveSource])
+  }, [isVisualizing, currentTraceStep, renderedActiveSource, activeFile])
+
+  // Every call frame still open at the current step (module scope, frame 0,
+  // is implicit and not included here) - drives both the boxed rendering
+  // below and which frame's steps "count" for locals/highlighting above.
+  const openFrames = useMemo(
+    () => visualTrace ? computeOpenFramesUpTo(visualTrace.trace, currentTraceStep?.step ?? -1) : new Map<number, OpenFrame>(),
+    [visualTrace, currentTraceStep],
+  )
+
+  // Renders every top-level open call (direct children of module scope)
+  // anchored in the file currently shown in the visualizer editor as a
+  // Monaco content widget positioned exactly at its call site - inline,
+  // floating to the right of the (now hidden) call text, rather than as a
+  // separate row pushed below the line - each one a <CallFrameBox>, which
+  // recursively renders any further-nested open calls inside its own body.
+  // Boxes are added/removed as frames open and close.
+  useEffect(() => {
+    const editorInstance = visualEditorRef.current
+    const monaco = visualMonacoRef.current
+    const widgets = boxWidgetsRef.current
+
+    if (!isVisualizing || !editorInstance || !monaco) {
+      if (editorInstance) {
+        editorInstance.changeViewZones((accessor) => {
+          for (const { zoneId } of widgets.values()) if (zoneId) accessor.removeZone(zoneId)
+        })
+      }
+      for (const { root, widget, observer } of widgets.values()) { observer.disconnect(); root.unmount(); editorInstance?.removeContentWidget(widget) }
+      widgets.clear()
+      if (editorInstance) callSiteHideDecorationsRef.current = editorInstance.deltaDecorations(callSiteHideDecorationsRef.current, [])
+      setFrameSpacerChars((current) => (current.size === 0 ? current : new Map()))
+      return
+    }
+
+    const nodeIndex = astIndexByFile.get(activeFile)
+    const topFrames = nodeIndex
+      ? [...openFrames.values()].filter((frame) => frame.parentFrameId === 0 && frame.anchorPath === activeFile)
+      : []
+
+    const wantedIds = new Set(topFrames.map((frame) => frame.frameId))
+    const removedZoneIds: string[] = []
+    for (const [frameId, entry] of widgets) {
+      if (!wantedIds.has(frameId)) {
+        entry.observer.disconnect()
+        entry.root.unmount()
+        editorInstance.removeContentWidget(entry.widget)
+        if (entry.zoneId) removedZoneIds.push(entry.zoneId)
+        widgets.delete(frameId)
+      }
+    }
+    if (removedZoneIds.length > 0) {
+      editorInstance.changeViewZones((accessor) => { for (const zoneId of removedZoneIds) accessor.removeZone(zoneId) })
+    }
+    const wantedNodeIds = new Set(topFrames.map((frame) => frame.anchorNodeId))
+    setFrameSpacerChars((current) => {
+      let changed = false
+      const next = new Map(current)
+      for (const nodeId of next.keys()) if (!wantedNodeIds.has(nodeId)) { next.delete(nodeId); changed = true }
+      return changed ? next : current
+    })
+
+    const hideDecorations: MonacoEditorNS.IModelDeltaDecoration[] = []
+    for (const frame of topFrames) {
+      const anchorNode = nodeIndex!.get(frame.anchorNodeId)
+      if (!anchorNode || anchorNode.line === undefined || anchorNode.endLine === undefined || anchorNode.col === undefined || anchorNode.endCol === undefined) continue
+
+      const startPos = { lineNumber: anchorNode.line, column: anchorNode.col + 1 }
+      const endPos = { lineNumber: anchorNode.endLine, column: anchorNode.endCol + 1 }
+      hideDecorations.push({
+        range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
+        options: { inlineClassName: 'call-site-hidden' },
+      })
+
+      let entry = widgets.get(frame.frameId)
+      if (!entry) {
+        const domNode = document.createElement('div')
+        domNode.className = 'call-frame-zone'
+        const root = createRoot(domNode)
+        const widget: MonacoEditorNS.IContentWidget = {
+          allowEditorOverflow: true,
+          getId: () => `call-frame-widget-${frame.frameId}`,
+          getDomNode: () => domNode,
+          getPosition: () => ({
+            position: { lineNumber: anchorNode.line!, column: anchorNode.col! + 1 },
+            preference: [monaco.editor.ContentWidgetPositionPreference.EXACT],
+          }),
+        }
+        editorInstance.addContentWidget(widget)
+        // An empty view zone reserves vertical space right below the call
+        // site's own line, so the following source line is pushed down and
+        // stays visible beneath the box - rather than the box (which floats
+        // independently of document flow, see the content widget above)
+        // simply overlapping whatever line happens to sit right under it.
+        const zoneDomNode = document.createElement('div')
+        let zoneId: string | null = null
+        let zoneObj: MonacoEditorNS.IViewZone | null = null
+        editorInstance.changeViewZones((accessor) => {
+          zoneObj = { afterLineNumber: endPos.lineNumber, heightInPx: 0, domNode: zoneDomNode }
+          zoneId = accessor.addZone(zoneObj)
+        })
+        // Keeps the reserved horizontal spacer (real space characters
+        // spliced into the rendered text right after the call, see
+        // frameSpacerChars), the reserved vertical zone height, and the
+        // widget's own on-screen position all in sync as the box's
+        // rendered size changes every trace step.
+        const observer = new ResizeObserver(() => {
+          const boxWidth = domNode.offsetWidth
+          const boxHeight = domNode.offsetHeight
+          const startVisible = editorInstance.getScrolledVisiblePosition(startPos)
+          const endVisible = editorInstance.getScrolledVisiblePosition(endPos)
+          const callTextWidth = startVisible && endVisible ? endVisible.left - startVisible.left : 0
+          const fontInfo = editorInstance.getOption(monaco.editor.EditorOption.fontInfo)
+          const charWidth = fontInfo.spaceWidth || 8
+          const charsNeeded = Math.max(0, Math.ceil((boxWidth - callTextWidth) / charWidth))
+          setFrameSpacerChars((current) => (current.get(anchorNode.id) === charsNeeded ? current : new Map(current).set(anchorNode.id, charsNeeded)))
+          const lineHeight = editorInstance.getOption(monaco.editor.EditorOption.lineHeight)
+          const zoneHeight = Math.max(0, boxHeight - lineHeight)
+          if (zoneObj && zoneObj.heightInPx !== zoneHeight) {
+            zoneObj.heightInPx = zoneHeight
+            editorInstance.changeViewZones((accessor) => { if (zoneId) accessor.layoutZone(zoneId) })
+          }
+          editorInstance.layoutContentWidget(widget)
+        })
+        observer.observe(domNode)
+        entry = { widget, root, domNode, observer, zoneId, zoneObj, zoneDomNode }
+        widgets.set(frame.frameId, entry)
+      }
+      entry.root.render(
+        <CallFrameBox
+          frame={frame}
+          openFrames={openFrames}
+          nodeIndexByFile={astIndexByFile}
+          visualSources={visualSources}
+          trace={visualTrace?.trace ?? []}
+          uptoStep={currentTraceStep?.step ?? -1}
+          currentStep={currentTraceStep}
+        />,
+      )
+      // The box's rendered size can change every step (e.g. a nested box
+      // opening inside it); ask Monaco to re-measure and reposition once
+      // React has actually committed the update to the DOM.
+      requestAnimationFrame(() => {
+        const current = widgets.get(frame.frameId)
+        if (current) editorInstance.layoutContentWidget(current.widget)
+      })
+    }
+    callSiteHideDecorationsRef.current = editorInstance.deltaDecorations(callSiteHideDecorationsRef.current, hideDecorations)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVisualizing, activeFile, openFrames, currentTraceStep, astIndexByFile, visualSources, visualTrace])
 
   // Auto-play: advance one step every 500ms while playing, stopping at the
   // end of the trace.
