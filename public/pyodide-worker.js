@@ -300,7 +300,14 @@ def _glpython_pos(node):
 def _glpython_record(node, kind, label, value_text=None, func_name="<module>", extra_locals=None, reset_node_ids=None, annotate_node_id=None, annotate_text=None, closes_frame_id=None):
   global _glpython_step_count
   if getattr(node, "_glpython_id", None) in _glpython_suppress_substitution_ids:
-    value_text = None
+    # These are the sub-expressions of a for-loop's own iterable
+    # ("range(3)" in "for i in range(3):") - their substitution is always
+    # suppressed (see _exec_for) so the header never collapses to the
+    # iterable's value, which means a step recorded here would show
+    # literally nothing new: same line, same text, no annotation. Skip
+    # recording it rather than giving the learner a no-op step to click
+    # through; the loop-iter step right after is what actually changes.
+    return
   if _glpython_step_count >= _GLPYTHON_MAX_STEPS:
     raise _GlpythonTraceLimit()
   line, end_line, col, end_col = _glpython_pos(node)
@@ -846,7 +853,22 @@ def _exec_continue(node, scope):
 
 def _exec_return(node, scope):
   value = _glpython_eval(node.value, scope) if node.value is not None else None
-  _glpython_record(node, "exec", "return", _glpython_safe_repr(value), _glpython_current_func())
+  # If node.value just got its own "eval" step on this very line (e.g.
+  # "return result" substituting "result" -> "'even'"), the box already
+  # shows the returned value - recording a second step for the "return"
+  # keyword itself would be a no-op click (same line, same text). Only a
+  # bare "return" or a value whose evaluation didn't produce a step of its
+  # own (e.g. a literal constant) still needs its own record here.
+  value_node_id = getattr(node.value, "_glpython_id", None) if node.value is not None else None
+  last = _glpython_trace_log[-1] if _glpython_trace_log else None
+  already_visible = (
+    last is not None
+    and value_node_id is not None
+    and last["nodeId"] == value_node_id
+    and last["line"] == node.lineno
+  )
+  if not already_visible:
+    _glpython_record(node, "exec", "return", _glpython_safe_repr(value), _glpython_current_func())
   raise _GlpythonReturn(value)
 
 def _exec_functiondef(node, scope):
