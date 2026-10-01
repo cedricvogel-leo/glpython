@@ -184,6 +184,82 @@ export function buildAnnotationsUpTo(trace: TraceStep[], uptoStep: number, frame
   return state
 }
 
+// path -> every source line number that has already executed at some point
+// up to (but not including) `uptoStep`, scoped to one call frame. Used to
+// render a dimmer "already executed" treatment on past lines, distinct from
+// the brighter "current line" treatment `uptoStep`'s own line gets instead
+// (see App.tsx's Frame component).
+export type ExecutedLinesState = Map<string, Set<number>>
+
+// Replays the trace up to (but not including) `uptoStep`, collecting each
+// step's own `line` only - deliberately never the node's full `line..endLine`
+// span, even though that's readily available. Several statement kinds carry
+// an AST node whose own span covers far more than what has actually run so
+// far: an `if`/`while` node's span covers its *entire* body (both branches,
+// for an `if`), and a `def`'s span covers its *entire* function body. Using
+// `endLine` here would therefore immediately mark an untaken `if`/`else`
+// branch, or a function's whole body, as "already executed" the moment its
+// header/signature line itself runs - which is exactly backwards. Marking
+// only `step.line` naturally keeps this correct for free: an `if`'s branch
+// step only marks its own header line (the branch's own body lines get
+// marked separately, by their own per-statement steps, only for whichever
+// branch was actually taken), and a `def`'s step - which only ever fires
+// once, when the function is *defined*, not when it's later called - only
+// marks its header line, never any line of its body.
+//
+// "call-enter" steps are skipped entirely: their `line`/`path` describe the
+// *call site* (in the caller's own file/frame), not any line of the callee's
+// own body, even though the step itself is tagged with the callee's new
+// frame id - folding it in here would risk mislabelling a line in the new
+// frame's own source (most visibly for a recursive call, where caller and
+// callee share the exact same file and line numbers).
+//
+// Mirrors buildSubstitutionsUpTo's loop-reset behaviour: a "loop-iter"
+// step's `resetNodeIds` are cleared from the set right before that step's
+// own line is (re-)marked - using each reset node's own `line`/`endLine`
+// (from `nodeIndexByFile`, since resetNodeIds are AST node ids, not lines)
+// to know which lines to drop - so a loop body's (and, for `while` loops,
+// its condition's) execution trail visibly restarts at the top of every new
+// iteration instead of just accumulating across the whole loop's run.
+export function buildExecutedLinesUpTo(
+  trace: TraceStep[],
+  uptoStep: number,
+  frameId: number,
+  nodeIndexByFile: Map<string, Map<number, AstNode>>,
+): ExecutedLinesState {
+  const state: ExecutedLinesState = new Map()
+
+  for (const step of trace) {
+    if (step.step > uptoStep) break
+    if (step.frameId !== frameId) continue
+    if (step.kind === 'call-enter') continue
+
+    if (step.kind === 'loop-iter' && step.resetNodeIds?.length) {
+      const nodeIndex = nodeIndexByFile.get(step.path)
+      const lines = state.get(step.path)
+      if (lines && nodeIndex) {
+        for (const id of step.resetNodeIds) {
+          const node = nodeIndex.get(id)
+          if (!node || node.line === undefined) continue
+          const endLine = node.endLine ?? node.line
+          for (let line = node.line; line <= endLine; line++) lines.delete(line)
+        }
+      }
+    }
+
+    if (step.step === uptoStep) continue
+
+    let lines = state.get(step.path)
+    if (!lines) {
+      lines = new Set()
+      state.set(step.path, lines)
+    }
+    lines.add(step.line)
+  }
+
+  return state
+}
+
 // One user-defined function call whose box is (or was, up to the replayed
 // step) open: which frame it is, where its call site is (the box's anchor
 // position), and where its own def's source lives (the box's content).

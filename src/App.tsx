@@ -9,7 +9,7 @@ import type { AccountInfo } from '@azure/msal-browser'
 import { clearLocalProject, exportProjectZip, importProjectFolder, importProjectZip, loadLocalProject, saveLocalProject } from './projectStorage'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
 import { detectLocale, localeNames, saveLocale, translations, type Locale } from './i18n'
-import { buildAnnotationsUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, type AstNode, type OpenFrame, type TraceResult, type TraceStep } from './visualizer'
+import { buildAnnotationsUpTo, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, type AstNode, type OpenFrame, type TraceResult, type TraceStep } from './visualizer'
 import { tokenizePythonFragment } from './pyHighlight'
 import './App.css'
 
@@ -136,6 +136,8 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
   const rendered = renderFrameSource(source, lineOffsets, nodeIndex, clipRange, substitutions, annotations)
   if (!rendered) return null
 
+  const executedLines = buildExecutedLinesUpTo(trace, uptoStep, frameId, nodeIndexByFile).get(path)
+
   const children = [...openFrames.values()].filter((f) => f.parentFrameId === frameId)
   const isFrameActive = currentStep?.frameId === frameId
   const clipStart = clipRange?.start ?? 0
@@ -166,6 +168,8 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
           cursor += line.length + 1
           const absoluteLine = startLine + index
           const isCurrentLine = isFrameActive && currentStep?.line === absoluteLine
+          const isExecutedLine = !isCurrentLine && executedLines?.has(absoluteLine) === true
+          const lineStateClass = isCurrentLine ? ' visual-current-line' : isExecutedLine ? ' visual-executed-line' : ''
           const segments = buildLineSegments(line, lineStart, rendered.highlights, rendered.annotationHighlights, childRanges)
           const content = segments.map((segment, segmentIndex) => segment.kind === 'child' ? (
             <span key={segmentIndex} className="frame-child-zone">
@@ -195,13 +199,13 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
           // taller than a plain line of text.
           if (isModule) {
             return (
-              <div className={`frame-line-row${isCurrentLine ? ' visual-current-line' : ''}`} key={index}>
+              <div className={`frame-line-row${lineStateClass}`} key={index}>
                 <span className="frame-gutter-num">{absoluteLine}</span>
-                <div className={`frame-line${isCurrentLine ? ' visual-current-line' : ''}`}>{content}</div>
+                <div className={`frame-line${lineStateClass}`}>{content}</div>
               </div>
             )
           }
-          return <div key={index} className={`frame-line${isCurrentLine ? ' visual-current-line' : ''}`}>{content}</div>
+          return <div key={index} className={`frame-line${lineStateClass}`}>{content}</div>
         })}
       </div>
       <div className="frame-divider" />
