@@ -327,6 +327,30 @@ export function nodeRange(node: AstNode, lineOffsets: number[]): { start: number
   return { start, end }
 }
 
+// Compound statements (function defs, for/while loops, if statements) carry
+// their whole nested body in their own source span, since that's simply
+// where their first/last token sit. For a preview highlight, though,
+// showing the entire body as "about to run" reads as if the whole block
+// were one atomic step, when really only the def/for/while/if's own
+// header line(s) are what that particular trace step evaluates - the body
+// only runs as its own later steps. This trims the span down to just the
+// header: from the node's own start up to (not including) wherever its
+// first body statement begins.
+const HEAD_ONLY_NODE_TYPES = new Set(['FunctionDef', 'AsyncFunctionDef', 'For', 'While', 'If'])
+
+export function nodeHeadRange(node: AstNode, lineOffsets: number[]): { start: number; end: number } | null {
+  const full = nodeRange(node, lineOffsets)
+  if (!full || !HEAD_ONLY_NODE_TYPES.has(node.type)) return full
+  const body = node.fields.body
+  const firstBodyStatement = Array.isArray(body) ? body.find((item): item is AstNode => item !== null && typeof item === 'object') : undefined
+  if (!firstBodyStatement || firstBodyStatement.line === undefined) return full
+  const bodyStart = lineOffsets[firstBodyStatement.line - 1]
+  // A one-line suite (e.g. "if x: y = 1") has no separate header line to
+  // trim down to - fall back to the whole node in that case.
+  if (bodyStart === undefined || bodyStart <= full.start || bodyStart >= full.end) return full
+  return { start: full.start, end: bodyStart }
+}
+
 // Produces the source text for one file with every currently-substituted
 // AST node's original text replaced by its computed value, plus the
 // character ranges (in the *new* text) that are substituted values, for
@@ -421,8 +445,9 @@ export function locateNodeRenderedRange(
   substitutions: Map<number, string> | undefined,
   annotations: Map<number, string> | undefined,
   node: AstNode,
+  useHeadOnly = false,
 ): { start: number; end: number } | null {
-  const range = nodeRange(node, lineOffsets)
+  const range = useHeadOnly ? nodeHeadRange(node, lineOffsets) : nodeRange(node, lineOffsets)
   if (!range) return null
   const merged = buildMergedInserts(source, lineOffsets, nodeIndex, substitutions, annotations)
   return { start: locateOffset(merged, range.start), end: locateOffset(merged, range.end) }

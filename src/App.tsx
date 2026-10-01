@@ -191,7 +191,7 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
     ? (() => {
         const nextNode = nodeIndex.get(nextStep.nodeId)
         if (!nextNode) return []
-        const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, nextNode)
+        const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, nextNode, true)
         if (!range) return []
         return [{ start: range.start - clipStart, end: range.end - clipStart }]
       })()
