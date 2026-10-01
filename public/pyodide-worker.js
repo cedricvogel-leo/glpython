@@ -790,10 +790,17 @@ def _exec_if(node, scope):
   _glpython_exec_stmts(branch, scope)
 
 def _exec_while(node, scope):
-  body_ids = getattr(node, "_glpython_body_ids", None)
+  body_ids = getattr(node, "_glpython_body_ids", None) or []
+  test_ids = getattr(node, "_glpython_test_ids", None) or []
+  reset_ids = body_ids + test_ids
   while True:
+    # Reset the condition (and body) back to their un-substituted source
+    # right before re-evaluating the condition, so "while x >= 0:" visibly
+    # reverts from the previous iteration's "while True:" before collapsing
+    # to its new result, the same way the body resets before re-running.
+    _glpython_record(node.test, "loop-iter", f"while {_glpython_node_source(node.test)}", None, _glpython_current_func(), reset_node_ids=reset_ids)
     condition = _glpython_eval(node.test, scope)
-    _glpython_record(node, "branch", f"while {_glpython_node_source(node.test)}", "true" if condition else "false", _glpython_current_func(), reset_node_ids=body_ids if condition else None)
+    _glpython_record(node, "branch", f"while {_glpython_node_source(node.test)}", "true" if condition else "false", _glpython_current_func())
     if not condition:
       break
     try:
@@ -1002,6 +1009,17 @@ def _glpython_preprocess(tree, source, counter):
           if child_id is not None:
             body_ids.append(child_id)
       node._glpython_body_ids = body_ids
+    if isinstance(node, ast.While):
+      # Every node id inside the loop's condition expression, so it can also
+      # be reset to its un-substituted source right before each re-check -
+      # otherwise "while x >= 0:" would stay collapsed to "while True:" from
+      # the previous iteration until the condition's sub-expressions happen
+      # to be re-evaluated, instead of visibly reverting first like the body.
+      node._glpython_test_ids = [
+        child_id
+        for child in ast.walk(node.test)
+        if (child_id := getattr(child, "_glpython_id", None)) is not None
+      ]
     if isinstance(node, ast.For):
       # Every node id inside the loop's iterable expression, so its "eval"
       # step can be suppressed from inline substitution (see
