@@ -121,12 +121,14 @@ export type SubstitutionState = Map<string, Map<number, string>>
 export type AnnotationState = Map<string, Map<number, string>>
 
 // Replays the trace from the start up to (and including) `uptoStep`,
-// producing the substitution state to render. Each "loop-iter" step carries
-// `resetNodeIds` (every node id inside that loop's body) which is cleared
-// from the state *before* applying the iteration's own value - this is what
-// makes a loop body visibly "reset" to its original source at the start of
-// every iteration instead of staying stuck showing the previous iteration's
-// substituted values.
+// producing the substitution state to render. Each "loop-iter" step (for
+// "for" loops) and each "branch" step whose condition is true (for "while"
+// loops, re-checked at the top of every iteration) carries `resetNodeIds`
+// (every node id inside that loop's body) which is cleared from the state
+// *before* applying the step's own value - this is what makes a loop body
+// visibly "reset" to its original source at the start of every iteration
+// instead of staying stuck showing the previous iteration's substituted
+// values.
 //
 // `frameId` scopes the replay to steps that executed in exactly one call
 // frame (0 = module scope). This is what keeps recursive/nested calls from
@@ -142,7 +144,7 @@ export function buildSubstitutionsUpTo(trace: TraceStep[], uptoStep: number, fra
     if (step.step > uptoStep) break
     if (step.frameId !== frameId) continue
 
-    if (step.kind === 'loop-iter' && step.resetNodeIds?.length) {
+    if ((step.kind === 'loop-iter' || step.kind === 'branch') && step.resetNodeIds?.length) {
       const byNode = state.get(step.path)
       if (byNode) for (const id of step.resetNodeIds) byNode.delete(id)
     }
