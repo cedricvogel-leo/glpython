@@ -78,6 +78,7 @@ export type Translation = {
   exitVisualizer: string
   visualizerTitle: string
   visualizerStepOf: (current: number, total: number) => string
+  visualizerBeforeStart: string
   visualizerNoSteps: string
   visualizerTruncated: string
   visualizerRestart: string
@@ -164,6 +165,7 @@ export const translations: Record<Locale, Translation> = {
     exitVisualizer: 'Exit visualizer',
     visualizerTitle: 'Execution visualizer',
     visualizerStepOf: (current, total) => `Step ${current} of ${total}`,
+    visualizerBeforeStart: 'Before execution',
     visualizerNoSteps: 'No steps recorded. Run a program with at least one statement first.',
     visualizerTruncated: 'Trace stopped after too many steps (likely an infinite loop). Showing what ran so far.',
     visualizerRestart: 'Restart',
@@ -248,6 +250,7 @@ export const translations: Record<Locale, Translation> = {
     exitVisualizer: 'Visualisierung beenden',
     visualizerTitle: 'Ausführungs-Visualisierung',
     visualizerStepOf: (current, total) => `Schritt ${current} von ${total}`,
+    visualizerBeforeStart: 'Vor der Ausführung',
     visualizerNoSteps: 'Keine Schritte aufgezeichnet. Führe zuerst ein Programm mit mindestens einer Anweisung aus.',
     visualizerTruncated: 'Die Aufzeichnung wurde nach zu vielen Schritten gestoppt (wahrscheinlich eine Endlosschleife). Es wird gezeigt, was bisher ausgeführt wurde.',
     visualizerRestart: 'Neu starten',
