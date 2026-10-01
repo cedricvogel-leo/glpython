@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
-import Editor from '@monaco-editor/react'
-import type { Monaco, OnMount } from '@monaco-editor/react'
-import type { editor as MonacoEditorNS } from 'monaco-editor'
+import Editor, { useMonaco } from '@monaco-editor/react'
+import type { Monaco } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, ChevronDown, Cloud, Download, FileCode2, FolderOpen, GraduationCap, Languages, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pause, Pencil, Play, Plus, RotateCcw, Save, Settings2, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Trash2, Upload, UserRound, Workflow, X } from 'lucide-react'
 import { addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from './project'
 import type { ProjectFileKind } from './project'
@@ -11,7 +9,8 @@ import type { AccountInfo } from '@azure/msal-browser'
 import { clearLocalProject, exportProjectZip, importProjectFolder, importProjectZip, loadLocalProject, saveLocalProject } from './projectStorage'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
 import { detectLocale, localeNames, saveLocale, translations, type Locale } from './i18n'
-import { applySubstitutions, buildAnnotationsUpTo, buildSubstitutionsUpTo, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, locateNodeRenderedRange, nodeRange, renderFrameSource, type AstNode, type OpenFrame, type TraceResult, type TraceStep } from './visualizer'
+import { buildAnnotationsUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, type AstNode, type OpenFrame, type TraceResult, type TraceStep } from './visualizer'
+import { tokenizePythonFragment } from './pyHighlight'
 import './App.css'
 
 // One highlighted (or plain) run of text within a single rendered line of a
@@ -71,88 +70,145 @@ function buildLineSegments(
   return segments
 }
 
-type CallFrameBoxProps = {
-  frame: OpenFrame
+// A plain (un-substituted, un-annotated) run of source text is further
+// split into syntax-colored runs here, using Monaco's own standalone Python
+// tokenizer - so highlighting stays consistent with the real editor without
+// a separate highlighting library. Substituted-value/annotation spans keep
+// their own dedicated color instead (see the `className` branch below) and
+// are never re-tokenized.
+function TextSegment({ segment, monaco }: { segment: Extract<LineSegment, { kind: 'text' }>; monaco: Monaco | null }) {
+  if (segment.className || !monaco || segment.text === '') return <span className={segment.className}>{segment.text}</span>
+  const runs = tokenizePythonFragment(monaco, segment.text)
+  return <>{runs.map((run, index) => <span key={index} className={run.className}>{run.text}</span>)}</>
+}
+
+// Which source span a Frame renders: the outermost module/global scope
+// (the whole file, no single AST node to clip to) or one open user-defined
+// function call (clipped to its own "def foo(...):" node).
+type FrameScope = { kind: 'module' } | { kind: 'call'; funcDefNodeId: number }
+
+type FrameProps = {
+  frameId: number
+  path: string
+  scope: FrameScope
   openFrames: Map<number, OpenFrame>
   nodeIndexByFile: Map<string, Map<number, AstNode>>
   visualSources: Record<string, string>
   trace: TraceStep[]
   uptoStep: number
   currentStep: TraceStep | null
+  monaco: Monaco | null
+  noLocalsLabel: string
 }
 
-// Renders one open user-defined function call as a boxed frame anchored at
-// its call site: a "def foo(a=3, b=4):" header (with bound-parameter values
-// annotated, same mechanism as loop-variable annotations) followed by its
-// body, with its own current-line highlight and its own substituted values -
-// all scoped to this exact invocation via its unique frame id, so recursive
-// calls to the same function never mix up each other's displayed state.
-// Any further-nested open call inside this frame's body renders its own
-// box recursively, right after the line that calls it.
-function CallFrameBox({ frame, openFrames, nodeIndexByFile, visualSources, trace, uptoStep, currentStep }: CallFrameBoxProps) {
-  const nodeIndex = nodeIndexByFile.get(frame.funcDefPath)
-  const source = visualSources[frame.funcDefPath]
-  const defNode = nodeIndex?.get(frame.funcDefNodeId)
-  if (!nodeIndex || source === undefined || !defNode || defNode.line === undefined) return null
+// Renders one frame of execution - either the outermost module/global scope
+// or one open user-defined function call anchored at its call site - as
+// plain HTML driven directly by the trace/AST, instead of as Monaco overlay
+// machinery. Every frame, however deeply nested, shares the exact same
+// layout: its own source (with computed values substituted inline and its
+// own current line highlighted) on the left, a thin divider, and its own
+// variables panel on the right - all scoped to this exact invocation via
+// its unique frame id, so recursive calls to the same function never mix up
+// each other's displayed state. Any further-nested open call inside this
+// frame's body renders its own Frame recursively, inline, right at its own
+// call site - real DOM in normal flow, so surrounding text/lines reflow
+// automatically.
+function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSources, trace, uptoStep, currentStep, monaco, noLocalsLabel }: FrameProps) {
+  const nodeIndex = nodeIndexByFile.get(path)
+  const source = visualSources[path]
+  if (!nodeIndex || source === undefined) return null
 
   const lineOffsets = computeLineOffsets(source)
-  const defRange = nodeRange(defNode, lineOffsets)
-  const substitutions = buildSubstitutionsUpTo(trace, uptoStep, frame.frameId).get(frame.funcDefPath)
-  const annotations = new Map(buildAnnotationsUpTo(trace, uptoStep, frame.frameId).get(frame.funcDefPath) ?? [])
-  for (const [nodeId, text] of frame.paramAnnotations) annotations.set(nodeId, text)
+  let clipRange: { start: number; end: number } | null = null
+  if (scope.kind === 'call') {
+    const defNode = nodeIndex.get(scope.funcDefNodeId)
+    if (!defNode) return null
+    clipRange = nodeRange(defNode, lineOffsets)
+    if (!clipRange) return null
+  }
+  const startLine = lineNumberAtOffset(lineOffsets, clipRange?.start ?? 0)
 
-  const rendered = renderFrameSource(source, lineOffsets, nodeIndex, defNode, substitutions, annotations)
-  if (!rendered || !defRange) return null
+  const substitutions = buildSubstitutionsUpTo(trace, uptoStep, frameId).get(path)
+  const annotations = new Map(buildAnnotationsUpTo(trace, uptoStep, frameId).get(path) ?? [])
+  const openFrame = frameId !== 0 ? openFrames.get(frameId) : undefined
+  if (openFrame) for (const [nodeId, text] of openFrame.paramAnnotations) annotations.set(nodeId, text)
 
-  const children = [...openFrames.values()].filter((f) => f.parentFrameId === frame.frameId)
-  const isFrameActive = currentStep?.frameId === frame.frameId
+  const rendered = renderFrameSource(source, lineOffsets, nodeIndex, clipRange, substitutions, annotations)
+  if (!rendered) return null
+
+  const children = [...openFrames.values()].filter((f) => f.parentFrameId === frameId)
+  const isFrameActive = currentStep?.frameId === frameId
+  const clipStart = clipRange?.start ?? 0
 
   // Every further-nested open call inside this frame's own body, mapped to
   // where its own call-site text (e.g. "fact(2)") ends up within this
-  // frame's *own* rendered text (already-clipped to defNode's span, exactly
+  // frame's *own* rendered text (already-clipped to clipRange, exactly
   // matching rendered.text's coordinates) - so it can be spliced inline,
   // replacing that text, instead of appended as a separate row below it.
   const childRanges = children.flatMap((child) => {
-    const anchorNode = child.anchorPath === frame.funcDefPath ? nodeIndex.get(child.anchorNodeId) : undefined
+    const anchorNode = child.anchorPath === path ? nodeIndex.get(child.anchorNodeId) : undefined
     if (!anchorNode) return []
     const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, anchorNode)
     if (!range) return []
-    return [{ start: range.start - defRange.start, end: range.end - defRange.start, frame: child }]
+    return [{ start: range.start - clipStart, end: range.end - clipStart, frame: child }]
   })
 
+  const isModule = scope.kind === 'module'
   const lines = rendered.text.split('\n')
   let cursor = 0
+  const localEntries = Object.entries(buildLocalsUpTo(trace, uptoStep, frameId))
+
   return (
-    <div className="call-frame-box">
-      <div className="call-frame-box-body">
+    <div className={`frame-box${isModule ? ' frame-box--root' : ''}`}>
+      <div className="frame-code">
         {lines.map((line, index) => {
           const lineStart = cursor
           cursor += line.length + 1
-          const absoluteLine = (defNode.line ?? 1) + index
+          const absoluteLine = startLine + index
           const isCurrentLine = isFrameActive && currentStep?.line === absoluteLine
           const segments = buildLineSegments(line, lineStart, rendered.highlights, rendered.annotationHighlights, childRanges)
-          return (
-            <div key={index}>
-              <div className={`call-frame-line${isCurrentLine ? ' visual-current-line' : ''}`}>
-                {segments.map((segment, segmentIndex) => segment.kind === 'child' ? (
-                  <span key={segmentIndex} className="call-frame-zone">
-                    <CallFrameBox
-                      frame={segment.frame}
-                      openFrames={openFrames}
-                      nodeIndexByFile={nodeIndexByFile}
-                      visualSources={visualSources}
-                      trace={trace}
-                      uptoStep={uptoStep}
-                      currentStep={currentStep}
-                    />
-                  </span>
-                ) : (
-                  <span key={segmentIndex} className={segment.className}>{segment.text}</span>
-                ))}
+          const content = segments.map((segment, segmentIndex) => segment.kind === 'child' ? (
+            <span key={segmentIndex} className="frame-child-zone">
+              <Frame
+                frameId={segment.frame.frameId}
+                path={segment.frame.funcDefPath}
+                scope={{ kind: 'call', funcDefNodeId: segment.frame.funcDefNodeId }}
+                openFrames={openFrames}
+                nodeIndexByFile={nodeIndexByFile}
+                visualSources={visualSources}
+                trace={trace}
+                uptoStep={uptoStep}
+                currentStep={currentStep}
+                monaco={monaco}
+                noLocalsLabel={noLocalsLabel}
+              />
+            </span>
+          ) : (
+            <TextSegment key={segmentIndex} segment={segment} monaco={monaco} />
+          ))
+          // Only the outermost module frame shows a line-number gutter,
+          // matching how Monaco only ever showed line numbers for the main
+          // editor and never inside a nested box. The gutter number lives
+          // in the same row as its line's content (rather than a separate
+          // fixed-height column) so it still lines up correctly even when
+          // an embedded nested frame makes that one logical line visually
+          // taller than a plain line of text.
+          if (isModule) {
+            return (
+              <div className={`frame-line-row${isCurrentLine ? ' visual-current-line' : ''}`} key={index}>
+                <span className="frame-gutter-num">{absoluteLine}</span>
+                <div className={`frame-line${isCurrentLine ? ' visual-current-line' : ''}`}>{content}</div>
               </div>
-            </div>
-          )
+            )
+          }
+          return <div key={index} className={`frame-line${isCurrentLine ? ' visual-current-line' : ''}`}>{content}</div>
         })}
+      </div>
+      <div className="frame-divider" />
+      <div className="frame-vars">
+        {localEntries.length > 0
+          ? localEntries.map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{value}</span></div>)
+          : <p className="frame-vars-empty">{noLocalsLabel}</p>}
       </div>
     </div>
   )
@@ -183,34 +239,17 @@ function App() {
   const zipInputRef = useRef<HTMLInputElement | null>(null)
   const languageMenuRef = useRef<HTMLDetailsElement | null>(null)
   const inputFieldRef = useRef<HTMLInputElement | null>(null)
-  const visualEditorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
-  const visualMonacoRef = useRef<Monaco | null>(null)
-  const visualDecorationsRef = useRef<string[]>([])
-  // One Monaco content widget + React root per top-level open call-frame
-  // box currently anchored in the visible file, keyed by frame id, so boxes
-  // can be added/updated/removed incrementally as the trace steps forward
-  // instead of tearing everything down on every render. Content widgets
-  // (rather than view zones) are what let a box render exactly at its call
-  // site's position - inline, floating to the right of it - instead of as
-  // a separate full-width row pushed below the line. Each entry's
-  // ResizeObserver keeps frameSpacerChars (below) in sync as the box's own
-  // content grows or shrinks.
-  const boxWidgetsRef = useRef<Map<number, { widget: MonacoEditorNS.IContentWidget; root: Root; domNode: HTMLDivElement; observer: ResizeObserver; zoneId: string | null; zoneObj: MonacoEditorNS.IViewZone | null; zoneDomNode: HTMLDivElement }>>(new Map())
-  // Decorations that hide each open call's own call-site text (its width is
-  // preserved via visibility:hidden, so anything after it on the same line,
-  // e.g. " * 2", keeps its original column) while its box floats over it.
-  const callSiteHideDecorationsRef = useRef<string[]>([])
-  // A box is almost always wider than the call text it floats over, so
-  // trailing code on the same line (" * 2") would otherwise end up hidden
-  // underneath it. Each open call's anchor node gets this many literal
-  // space characters spliced into the *rendered text itself* right after
-  // its own span (see applySubstitutions' `spacers` param), pushing any
-  // trailing code on that line out to the right, clear of the floating
-  // box - real characters, rather than a decoration, since Monaco's
-  // injected-text (before/after) decorations don't render in this build.
-  // Kept as state (not a ref) since changing it must re-run the
-  // renderedActiveSource memo below to regenerate the editor's value.
-  const [frameSpacerChars, setFrameSpacerChars] = useState<Map<number, number>>(new Map())
+  // Monaco's own namespace, obtained independent of whether any <Editor> is
+  // currently mounted (it loads/caches lazily the first time any component
+  // asks for it) - used only to run its standalone Python tokenizer for
+  // syntax coloring in the plain-HTML visualizer view below; the real
+  // Monaco <Editor> for normal editing is untouched by any of this.
+  const monaco = useMonaco()
+  // Scrollable container for the plain-HTML visualizer view, used to keep
+  // the currently executing line in view as steps advance (see the
+  // auto-scroll effect below) with ordinary DOM scrolling instead of
+  // Monaco's view-zone/content-widget machinery.
+  const visualizerScrollRef = useRef<HTMLDivElement | null>(null)
   const inputChannelRef = useRef<{ control: Int32Array; payload: Uint8Array } | null>(null)
   const selectedFile = project.files[activeFile] ?? project.files[project.mainFile]
 
@@ -391,37 +430,11 @@ function App() {
     return map
   }, [visualTrace])
 
-  const substitutions = useMemo(
-    () => visualTrace ? buildSubstitutionsUpTo(visualTrace.trace, currentTraceStep?.step ?? -1) : new Map(),
-    [visualTrace, currentTraceStep],
-  )
-
-  const annotations = useMemo(
-    () => visualTrace ? buildAnnotationsUpTo(visualTrace.trace, currentTraceStep?.step ?? -1) : new Map(),
-    [visualTrace, currentTraceStep],
-  )
-
-  const renderedActiveSource = useMemo(() => {
-    if (!currentTraceStep) return null
-    const source = visualSources[currentTraceStep.path]
-    if (source === undefined) return null
-    const offsets = computeLineOffsets(source)
-    const nodeIndex = astIndexByFile.get(currentTraceStep.path) ?? new Map()
-    return applySubstitutions(
-      source,
-      offsets,
-      nodeIndex,
-      substitutions.get(currentTraceStep.path),
-      annotations.get(currentTraceStep.path),
-      frameSpacerChars,
-    )
-  }, [currentTraceStep, visualSources, astIndexByFile, substitutions, annotations, frameSpacerChars])
-
   // Keep the open tab in sync with whichever file the trace is currently
   // executing in at module scope (e.g. an import's own top-level code) -
-  // but never for code running inside a boxed function call, since that
-  // now renders inline as a box at its call site instead of jumping the
-  // view away to wherever it's defined.
+  // but never for code running inside a call frame, since that now renders
+  // inline at its own call site instead of jumping the view away to
+  // wherever it's defined.
   useEffect(() => {
     if (!currentTraceStep || currentTraceStep.frameId !== 0) return
     if (!project.files[currentTraceStep.path]) return
@@ -430,194 +443,27 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTraceStep?.path, currentTraceStep?.frameId])
 
-  // Highlight the currently executing line, and the substituted value spans,
-  // directly in the Monaco editor whenever the visible step changes. Only
-  // shown while execution is at module scope in this file - while inside a
-  // boxed call, the current-line highlight instead appears inside that
-  // call's own box (see CallFrameBox).
-  useEffect(() => {
-    const editorInstance = visualEditorRef.current
-    const monaco = visualMonacoRef.current
-    if (!isVisualizing || !editorInstance || !monaco || !currentTraceStep || !renderedActiveSource) {
-      if (editorInstance) visualDecorationsRef.current = editorInstance.deltaDecorations(visualDecorationsRef.current, [])
-      return
-    }
-    const model = editorInstance.getModel()
-    if (!model) return
-    const decorations: MonacoEditorNS.IModelDeltaDecoration[] = []
-    if (currentTraceStep.frameId === 0 && currentTraceStep.path === activeFile) {
-      decorations.push({
-        range: new monaco.Range(currentTraceStep.line, 1, currentTraceStep.line, 1),
-        options: { isWholeLine: true, className: 'visual-current-line', linesDecorationsClassName: 'visual-current-line-margin' },
-      })
-    }
-    for (const { start, end } of renderedActiveSource.highlights) {
-      const startPos = model.getPositionAt(start)
-      const endPos = model.getPositionAt(end)
-      decorations.push({
-        range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
-        options: { inlineClassName: 'visual-substituted-value' },
-      })
-    }
-    for (const { start, end } of renderedActiveSource.annotationHighlights) {
-      const startPos = model.getPositionAt(start)
-      const endPos = model.getPositionAt(end)
-      decorations.push({
-        range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
-        options: { inlineClassName: 'visual-loop-annotation' },
-      })
-    }
-    visualDecorationsRef.current = editorInstance.deltaDecorations(visualDecorationsRef.current, decorations)
-  }, [isVisualizing, currentTraceStep, renderedActiveSource, activeFile])
-
   // Every call frame still open at the current step (module scope, frame 0,
-  // is implicit and not included here) - drives both the boxed rendering
+  // is implicit and not included here) - drives both the Frame rendering
   // below and which frame's steps "count" for locals/highlighting above.
   const openFrames = useMemo(
     () => visualTrace ? computeOpenFramesUpTo(visualTrace.trace, currentTraceStep?.step ?? -1) : new Map<number, OpenFrame>(),
     [visualTrace, currentTraceStep],
   )
 
-  // Renders every top-level open call (direct children of module scope)
-  // anchored in the file currently shown in the visualizer editor as a
-  // Monaco content widget positioned exactly at its call site - inline,
-  // floating to the right of the (now hidden) call text, rather than as a
-  // separate row pushed below the line - each one a <CallFrameBox>, which
-  // recursively renders any further-nested open calls inside its own body.
-  // Boxes are added/removed as frames open and close.
+  // Keeps the currently executing line in view as steps advance, with
+  // ordinary DOM scrolling - directly replacing the old Monaco
+  // view-zone/content-widget machinery, whose geometry bookkeeping across
+  // four separate systems was the root cause of the previous scrolling
+  // bugs. 'nearest' avoids jumping the view around on every single step,
+  // only scrolling when the active line would otherwise leave the
+  // viewport (e.g. stepping into/out of a deeply nested call).
   useEffect(() => {
-    const editorInstance = visualEditorRef.current
-    const monaco = visualMonacoRef.current
-    const widgets = boxWidgetsRef.current
-
-    if (!isVisualizing || !editorInstance || !monaco) {
-      if (editorInstance) {
-        editorInstance.changeViewZones((accessor) => {
-          for (const { zoneId } of widgets.values()) if (zoneId) accessor.removeZone(zoneId)
-        })
-      }
-      for (const { root, widget, observer } of widgets.values()) { observer.disconnect(); root.unmount(); editorInstance?.removeContentWidget(widget) }
-      widgets.clear()
-      if (editorInstance) callSiteHideDecorationsRef.current = editorInstance.deltaDecorations(callSiteHideDecorationsRef.current, [])
-      setFrameSpacerChars((current) => (current.size === 0 ? current : new Map()))
-      return
-    }
-
-    const nodeIndex = astIndexByFile.get(activeFile)
-    const topFrames = nodeIndex
-      ? [...openFrames.values()].filter((frame) => frame.parentFrameId === 0 && frame.anchorPath === activeFile)
-      : []
-
-    const wantedIds = new Set(topFrames.map((frame) => frame.frameId))
-    const removedZoneIds: string[] = []
-    for (const [frameId, entry] of widgets) {
-      if (!wantedIds.has(frameId)) {
-        entry.observer.disconnect()
-        entry.root.unmount()
-        editorInstance.removeContentWidget(entry.widget)
-        if (entry.zoneId) removedZoneIds.push(entry.zoneId)
-        widgets.delete(frameId)
-      }
-    }
-    if (removedZoneIds.length > 0) {
-      editorInstance.changeViewZones((accessor) => { for (const zoneId of removedZoneIds) accessor.removeZone(zoneId) })
-    }
-    const wantedNodeIds = new Set(topFrames.map((frame) => frame.anchorNodeId))
-    setFrameSpacerChars((current) => {
-      let changed = false
-      const next = new Map(current)
-      for (const nodeId of next.keys()) if (!wantedNodeIds.has(nodeId)) { next.delete(nodeId); changed = true }
-      return changed ? next : current
-    })
-
-    const hideDecorations: MonacoEditorNS.IModelDeltaDecoration[] = []
-    for (const frame of topFrames) {
-      const anchorNode = nodeIndex!.get(frame.anchorNodeId)
-      if (!anchorNode || anchorNode.line === undefined || anchorNode.endLine === undefined || anchorNode.col === undefined || anchorNode.endCol === undefined) continue
-
-      const startPos = { lineNumber: anchorNode.line, column: anchorNode.col + 1 }
-      const endPos = { lineNumber: anchorNode.endLine, column: anchorNode.endCol + 1 }
-      hideDecorations.push({
-        range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
-        options: { inlineClassName: 'call-site-hidden' },
-      })
-
-      let entry = widgets.get(frame.frameId)
-      if (!entry) {
-        const domNode = document.createElement('div')
-        domNode.className = 'call-frame-zone'
-        const root = createRoot(domNode)
-        const widget: MonacoEditorNS.IContentWidget = {
-          allowEditorOverflow: true,
-          getId: () => `call-frame-widget-${frame.frameId}`,
-          getDomNode: () => domNode,
-          getPosition: () => ({
-            position: { lineNumber: anchorNode.line!, column: anchorNode.col! + 1 },
-            preference: [monaco.editor.ContentWidgetPositionPreference.EXACT],
-          }),
-        }
-        editorInstance.addContentWidget(widget)
-        // An empty view zone reserves vertical space right below the call
-        // site's own line, so the following source line is pushed down and
-        // stays visible beneath the box - rather than the box (which floats
-        // independently of document flow, see the content widget above)
-        // simply overlapping whatever line happens to sit right under it.
-        const zoneDomNode = document.createElement('div')
-        let zoneId: string | null = null
-        let zoneObj: MonacoEditorNS.IViewZone | null = null
-        editorInstance.changeViewZones((accessor) => {
-          zoneObj = { afterLineNumber: endPos.lineNumber, heightInPx: 0, domNode: zoneDomNode }
-          zoneId = accessor.addZone(zoneObj)
-        })
-        // Keeps the reserved horizontal spacer (real space characters
-        // spliced into the rendered text right after the call, see
-        // frameSpacerChars), the reserved vertical zone height, and the
-        // widget's own on-screen position all in sync as the box's
-        // rendered size changes every trace step.
-        const observer = new ResizeObserver(() => {
-          const boxWidth = domNode.offsetWidth
-          const boxHeight = domNode.offsetHeight
-          const startVisible = editorInstance.getScrolledVisiblePosition(startPos)
-          const endVisible = editorInstance.getScrolledVisiblePosition(endPos)
-          const callTextWidth = startVisible && endVisible ? endVisible.left - startVisible.left : 0
-          const fontInfo = editorInstance.getOption(monaco.editor.EditorOption.fontInfo)
-          const charWidth = fontInfo.spaceWidth || 8
-          const charsNeeded = Math.max(0, Math.ceil((boxWidth - callTextWidth) / charWidth))
-          setFrameSpacerChars((current) => (current.get(anchorNode.id) === charsNeeded ? current : new Map(current).set(anchorNode.id, charsNeeded)))
-          const lineHeight = editorInstance.getOption(monaco.editor.EditorOption.lineHeight)
-          const zoneHeight = Math.max(0, boxHeight - lineHeight)
-          if (zoneObj && zoneObj.heightInPx !== zoneHeight) {
-            zoneObj.heightInPx = zoneHeight
-            editorInstance.changeViewZones((accessor) => { if (zoneId) accessor.layoutZone(zoneId) })
-          }
-          editorInstance.layoutContentWidget(widget)
-        })
-        observer.observe(domNode)
-        entry = { widget, root, domNode, observer, zoneId, zoneObj, zoneDomNode }
-        widgets.set(frame.frameId, entry)
-      }
-      entry.root.render(
-        <CallFrameBox
-          frame={frame}
-          openFrames={openFrames}
-          nodeIndexByFile={astIndexByFile}
-          visualSources={visualSources}
-          trace={visualTrace?.trace ?? []}
-          uptoStep={currentTraceStep?.step ?? -1}
-          currentStep={currentTraceStep}
-        />,
-      )
-      // The box's rendered size can change every step (e.g. a nested box
-      // opening inside it); ask Monaco to re-measure and reposition once
-      // React has actually committed the update to the DOM.
-      requestAnimationFrame(() => {
-        const current = widgets.get(frame.frameId)
-        if (current) editorInstance.layoutContentWidget(current.widget)
-      })
-    }
-    callSiteHideDecorationsRef.current = editorInstance.deltaDecorations(callSiteHideDecorationsRef.current, hideDecorations)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisualizing, activeFile, openFrames, currentTraceStep, astIndexByFile, visualSources, visualTrace])
+    if (!isVisualizing) return
+    const container = visualizerScrollRef.current
+    const activeLine = container?.querySelector('.visual-current-line')
+    activeLine?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [isVisualizing, currentTraceStep])
 
   // Auto-play: advance one step every 500ms while playing, stopping at the
   // end of the trace.
@@ -633,10 +479,6 @@ function App() {
   const visualStepForward = () => { setIsVisualPlaying(false); setVisualStepIndex((index) => Math.min(visualTraceSteps.length - 1, index + 1)) }
   const visualRestart = () => { setIsVisualPlaying(false); setVisualStepIndex(0) }
   const visualTogglePlay = () => setIsVisualPlaying((playing) => !playing)
-  const handleVisualEditorMount: OnMount = (editorInstance, monaco) => {
-    visualEditorRef.current = editorInstance
-    visualMonacoRef.current = monaco
-  }
 
   const downloadProject = async () => {
     const blob = await exportProjectZip(project)
@@ -693,7 +535,7 @@ function App() {
       <header className="topbar"><div className="brand"><button className="icon-button" aria-label={isSidebarOpen ? t.collapseSidebar : t.expandSidebar} onClick={() => setIsSidebarOpen((open) => !open)}>{isSidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button><div className="brand-mark"><Sparkles size={17} /></div><span>glpython</span><span className="brand-divider">/</span><span className="workspace-name">{t.workspaceName}</span></div><div className="topbar-actions"><details className="project-menu"><summary className="workspace-button"><FolderOpen size={15} /><span>{t.openProject}</span><ChevronDown size={13} /></summary><div className="project-menu-options"><button onClick={() => { void openFolder() }}><FolderOpen size={14} /> {t.openFolder}</button><button onClick={() => zipInputRef.current?.click()}><Upload size={14} /> {t.openProject}</button></div></details><button className="workspace-button" onClick={downloadProject}><Download size={15} /><span>{t.downloadProject}</span></button><input ref={zipInputRef} className="hidden-input" type="file" accept=".zip,application/zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openZip(file); event.target.value = '' }} /><button className={`cloud-status ${account ? 'connected' : ''}`} onClick={handleAuthClick}><Cloud size={16} /><span>{account ? t.microsoftConnected : t.signInWithMicrosoft}</span></button><button className="icon-button" aria-label={isGraphicsOpen ? t.collapseGraphics : t.expandGraphics} onClick={() => setIsGraphicsOpen((open) => !open)}>{isGraphicsOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button><details className="project-menu language-menu" ref={languageMenuRef}><summary className="workspace-button" aria-label={t.language}><Languages size={15} /><span>{localeNames[locale]}</span><ChevronDown size={13} /></summary><div className="project-menu-options">{(Object.keys(localeNames) as Locale[]).map((code) => <button key={code} className={code === locale ? 'active' : ''} onClick={() => selectLocale(code)}>{localeNames[code]}</button>)}</div></details><button className="icon-button" aria-label={t.settings}><Settings2 size={18} /></button><div className="avatar" title={account?.username ?? t.notSignedIn}><UserRound size={16} /></div></div></header>
       <div className="workspace">
         {isSidebarOpen && <aside className="sidebar"><div className="course-heading"><div><span className="eyebrow">{t.courseCategory}</span><h1>{project.name}</h1></div><button className="icon-button small" aria-label={t.renameProject} title={t.renameProject} onClick={renameProject}><Pencil size={16} /></button></div><div className="progress-row"><span>{t.lessonProgress}</span><strong>12%</strong></div><div className="progress-track"><span /></div><nav className="lesson-nav"><div className="nav-section"><span className="nav-label">{t.projectFiles}</span><button className="icon-button small" aria-label={t.addFile} onClick={addFile}><Plus size={16} /></button></div>{Object.values(project.files).map((file) => <div className={`file-item ${activeFile === file.path ? 'active' : ''}`} key={file.path}><button className="file-open-button" onClick={() => openFile(file.path)}><span className={`file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}</span><span>{file.label}</span>{openFiles.includes(file.path) && <span className="open-file-mark" />}</button><span className="file-actions"><button className="file-action" aria-label={t.renameFile(file.path)} onClick={() => renameFile(file.path)}><Pencil size={13} /></button><button className="file-action danger" aria-label={t.deleteFile(file.path)} onClick={() => deleteFile(file.path)}><Trash2 size={13} /></button></span></div>)}</nav><div className="sidebar-bottom"><div className="teacher-note"><GraduationCap size={18} /><div><strong>{t.teacherNoteTitle}</strong><span>{t.teacherNoteBody}</span></div></div><button className="help-link"><SquareTerminal size={16} /> {t.pythonReference}</button></div></aside>}
-        <main className="main-area">{authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}<div className="main-split"><div className="editor-column"><div className="editor-header"><div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong>{!isSaved && <span className="unsaved">{t.unsaved}</span>}</div><div className="editor-actions">{isVisualizing ? <button className="secondary-button" onClick={exitVisualizer}><X size={15} /> {t.exitVisualizer}</button> : <><button className="secondary-button" onClick={() => setOutput(t.readyOutput)}><RotateCcw size={15} /> {t.resetOutput}</button><button className="secondary-button" onClick={saveFile}><Save size={15} /> {t.save}</button><button className="secondary-button" onClick={runVisualize} disabled={isRunning || isVisualizerLoading}><Workflow size={15} /> {isVisualizerLoading ? t.visualizing : t.visualize}</button><button className="run-button" onClick={runCode} disabled={isRunning}><Play size={15} fill="currentColor" /> {isRunning ? t.running : t.runProject}</button></>}</div></div>{isVisualizing && <div className="visualizer-bar"><div className="visualizer-title"><Workflow size={15} /><span>{t.visualizerTitle}</span></div>{visualTraceSteps.length > 0 ? <><span className="visualizer-step-count">{t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span><input className="visualizer-scrubber" type="range" min={0} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setIsVisualPlaying(false); setVisualStepIndex(Number(event.target.value)) }} /><div className="visualizer-controls"><button className="icon-button small" aria-label={t.visualizerRestart} onClick={visualRestart}><RotateCcw size={15} /></button><button className="icon-button small" aria-label={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === 0}><SkipBack size={15} /></button><button className="icon-button small" aria-label={isVisualPlaying ? t.visualizerPause : t.visualizerPlay} onClick={visualTogglePlay}>{isVisualPlaying ? <Pause size={15} /> : <Play size={15} />}</button><button className="icon-button small" aria-label={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div></> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}</div>}{isVisualizing && (visualTrace?.truncated || visualTrace?.error) && <div className="visualizer-warning"><AlertTriangle size={14} />{visualTrace?.error ? t.visualizerError(visualTrace.error) : t.visualizerTruncated}</div>}<section className="editor-panel"><div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => setActiveFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span><span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); closeFile(path) }}><X size={13} /></span></button> })}</div><div className="editor-wrap">{isVisualizing ? <Editor key="visualizer-editor" height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={currentTraceStep?.path === activeFile && renderedActiveSource ? renderedActiveSource.text : (visualSources[activeFile] ?? selectedFile.code)} onMount={handleVisualEditorMount} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, readOnly: true }} /> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={selectedFile.code} onChange={updateCode} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true }} />}</div></section>{isVisualizing ? <section className="output-panel visualizer-locals"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.visualizerLocals}</span></div><span className="output-hint">{currentTraceStep?.func ?? ''}</span></div>{currentTraceStep && Object.keys(currentTraceStep.locals).length > 0 ? <div className="locals-grid">{Object.entries(currentTraceStep.locals).map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{value}</span></div>)}</div> : <p className="graphics-empty">{t.visualizerNoLocals}</p>}</section> : <section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span><span className="runtime-badge"><span className="pulse" /> {t.pyodideRuntime}</span></div><span className="output-hint">{t.runsFile(project.mainFile)}</span></div><pre>{output}</pre></section>}</div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => setIsGraphicsOpen(false)}><PanelRightClose size={15} /></button></div>{(isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics).length > 0 ? <GraphicsWindow commands={isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => setIsGraphicsOpen(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div></main>
+        <main className="main-area">{authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}<div className="main-split"><div className="editor-column"><div className="editor-header"><div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong>{!isSaved && <span className="unsaved">{t.unsaved}</span>}</div><div className="editor-actions">{isVisualizing ? <button className="secondary-button" onClick={exitVisualizer}><X size={15} /> {t.exitVisualizer}</button> : <><button className="secondary-button" onClick={() => setOutput(t.readyOutput)}><RotateCcw size={15} /> {t.resetOutput}</button><button className="secondary-button" onClick={saveFile}><Save size={15} /> {t.save}</button><button className="secondary-button" onClick={runVisualize} disabled={isRunning || isVisualizerLoading}><Workflow size={15} /> {isVisualizerLoading ? t.visualizing : t.visualize}</button><button className="run-button" onClick={runCode} disabled={isRunning}><Play size={15} fill="currentColor" /> {isRunning ? t.running : t.runProject}</button></>}</div></div>{isVisualizing && <div className="visualizer-bar"><div className="visualizer-title"><Workflow size={15} /><span>{t.visualizerTitle}</span></div>{visualTraceSteps.length > 0 ? <><span className="visualizer-step-count">{t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span><input className="visualizer-scrubber" type="range" min={0} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setIsVisualPlaying(false); setVisualStepIndex(Number(event.target.value)) }} /><div className="visualizer-controls"><button className="icon-button small" aria-label={t.visualizerRestart} onClick={visualRestart}><RotateCcw size={15} /></button><button className="icon-button small" aria-label={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === 0}><SkipBack size={15} /></button><button className="icon-button small" aria-label={isVisualPlaying ? t.visualizerPause : t.visualizerPlay} onClick={visualTogglePlay}>{isVisualPlaying ? <Pause size={15} /> : <Play size={15} />}</button><button className="icon-button small" aria-label={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div></> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}</div>}{isVisualizing && (visualTrace?.truncated || visualTrace?.error) && <div className="visualizer-warning"><AlertTriangle size={14} />{visualTrace?.error ? t.visualizerError(visualTrace.error) : t.visualizerTruncated}</div>}<section className="editor-panel"><div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => setActiveFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span><span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); closeFile(path) }}><X size={13} /></span></button> })}</div><div className="editor-wrap">{isVisualizing ? <div className="visualizer-view" ref={visualizerScrollRef}><Frame frameId={0} path={activeFile} scope={{ kind: 'module' }} openFrames={openFrames} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={currentTraceStep?.step ?? -1} currentStep={currentTraceStep} monaco={monaco} noLocalsLabel={t.visualizerNoLocals} /></div> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={selectedFile.code} onChange={updateCode} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true }} />}</div></section><section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span><span className="runtime-badge"><span className="pulse" /> {t.pyodideRuntime}</span></div><span className="output-hint">{t.runsFile(project.mainFile)}</span></div><pre>{isVisualizing ? (visualTrace?.output.slice(0, currentTraceStep?.stdoutLen ?? 0) || t.noOutput) : output}</pre></section></div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => setIsGraphicsOpen(false)}><PanelRightClose size={15} /></button></div>{(isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics).length > 0 ? <GraphicsWindow commands={isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => setIsGraphicsOpen(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div></main>
 
       </div><footer className="statusbar"><span><span className="status-dot" /> {t.statusRuntime}</span><span>{t.autosaveOff}</span><span>{t.footerTagline}</span></footer><div className="devbar"><span>{t.devTools}</span><button onClick={resetLocalProject}><Trash2 size={13} /> {t.clearLocalProject}</button></div>
       {inputRequest !== null && <div className="input-dialog-backdrop" role="presentation" onClick={() => respondToInput(true)}><form className="input-dialog" role="dialog" aria-modal="true" aria-label={t.inputDialogTitle} onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); respondToInput(false) }}><div className="input-dialog-heading"><Terminal size={16} /><span>{t.inputDialogTitle}</span></div><p className="input-dialog-prompt">{inputRequest || t.inputDialogFallbackPrompt}</p><input ref={inputFieldRef} className="input-dialog-field" type="text" value={inputValue} onChange={(event) => setInputValue(event.target.value)} placeholder={t.inputPlaceholder} /><div className="input-dialog-actions"><button type="button" className="secondary-button" onClick={() => respondToInput(true)}>{t.inputCancel}</button><button type="submit" className="run-button">{t.inputSubmit}</button></div></form></div>}
