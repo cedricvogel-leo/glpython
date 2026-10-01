@@ -1104,26 +1104,38 @@ def _glpython_run_visual():
   import gturtle
   _glpython_graphics_commands = gturtle.commands
 
+  # Swap in a capturing stdout/stderr only for the duration of this trace run
+  # - must restore the originals before returning, otherwise a later normal
+  # "run" (which drives output via pyodide.setStdout/setStderr, i.e. the
+  # underlying IO stream, not the "sys.stdout" attribute itself) would keep
+  # writing into this now-abandoned capture object forever, silently
+  # swallowing all of that run's output ("Keine Ausgabe" bug).
+  original_stdout = sys.stdout
+  original_stderr = sys.stderr
   capture = _GlpythonCapture()
   sys.stdout = capture
   sys.stderr = capture
 
   error_text = None
   truncated = False
-  _glpython_current_path = main_path
-  module_vars = {"__name__": "__main__", "__file__": main_path}
-  _glpython_module_scope = _GlpythonScope(module_vars, parent=None, kind="module")
-  main_tree = trees.get(main_path)
   try:
-    if main_tree is None:
-      raise SyntaxError(f"could not parse {main_path}")
-    _glpython_exec_stmts(main_tree.body, _glpython_module_scope)
-  except _GlpythonTraceLimit:
-    truncated = True
-  except _GlpythonReturn:
-    pass
-  except BaseException as error:
-    error_text = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    _glpython_current_path = main_path
+    module_vars = {"__name__": "__main__", "__file__": main_path}
+    _glpython_module_scope = _GlpythonScope(module_vars, parent=None, kind="module")
+    main_tree = trees.get(main_path)
+    try:
+      if main_tree is None:
+        raise SyntaxError(f"could not parse {main_path}")
+      _glpython_exec_stmts(main_tree.body, _glpython_module_scope)
+    except _GlpythonTraceLimit:
+      truncated = True
+    except _GlpythonReturn:
+      pass
+    except BaseException as error:
+      error_text = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+  finally:
+    sys.stdout = original_stdout
+    sys.stderr = original_stderr
 
   return json.dumps({
     "trace": _glpython_trace_log,
