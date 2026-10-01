@@ -199,6 +199,19 @@ def _glpython_safe_repr(value, limit=160):
     text = text[: limit - 1] + "…"
   return text
 
+def _glpython_describe_for_locals_panel(value):
+  # Callables/modules/classes have a noisy, memory-address-bearing repr
+  # (e.g. "<function fact at 0x7f3a2c0a1b80>") that's irrelevant to a
+  # learner - the vars panel only needs to communicate *what kind of thing*
+  # the name refers to, not its identity/address.
+  if isinstance(value, _GlpythonFunction) or isinstance(value, (_glpython_types.FunctionType, _glpython_types.BuiltinFunctionType, _glpython_types.LambdaType)):
+    return "function"
+  if isinstance(value, type):
+    return "class"
+  if isinstance(value, _glpython_types.ModuleType):
+    return "module"
+  return _glpython_safe_repr(value)
+
 # ---------------------------------------------------------------------------
 # Scopes: a simple chain of dict-based frames. Each function call / class body
 # pushes a new frame; module-level code uses the bottom-most frame. Name
@@ -362,17 +375,22 @@ def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_f
   _glpython_step_count += 1
 
 def _glpython_snapshot_locals(scope, limit=80):
+  # Only the scope's *own* vars are captured - a frame's panel should show
+  # exactly what that frame itself holds (e.g. a function's own locals, or
+  # the module's own top-level names), not names inherited/visible via LEGB
+  # name resolution from an enclosing scope. In particular this keeps a
+  # function's own name showing up only in the frame where it was defined
+  # (typically the module frame), not re-appearing in every call frame that
+  # happens to be able to look it up.
   snapshot = {}
-  cursor = scope
-  seen = set()
   count = 0
-  while cursor is not None and count < limit:
-    for name, value in cursor.vars.items():
-      if name not in seen and not name.startswith("_glpython"):
-        seen.add(name)
-        snapshot[name] = _glpython_safe_repr(value)
-        count += 1
-    cursor = cursor.module_scope if cursor.kind == "function" else cursor.parent
+  for name, value in scope.vars.items():
+    if count >= limit:
+      break
+    if name.startswith("_glpython") or (name.startswith("__") and name.endswith("__")):
+      continue
+    snapshot[name] = _glpython_describe_for_locals_panel(value)
+    count += 1
   return snapshot
 
 _glpython_current_path = None
@@ -826,7 +844,10 @@ def _exec_return(node, scope):
 
 def _exec_functiondef(node, scope):
   scope.set(node.name, _GlpythonFunction(node, scope))
-  _glpython_record(node, "exec", f"def {node.name}(...)", None, _glpython_current_func())
+  # Attach a locals snapshot so the defining frame's vars panel picks up the
+  # newly-bound function name right away, instead of waiting for some later,
+  # unrelated statement in that same frame to happen to snapshot locals.
+  _glpython_record(node, "exec", f"def {node.name}(...)", None, _glpython_current_func(), _glpython_snapshot_locals(scope))
 
 def _exec_classdef(node, scope):
   # Classes fall back to the real compiler for their whole body: this keeps
@@ -835,11 +856,11 @@ def _exec_classdef(node, scope):
   # dedicated handler (interpreting the body statement-by-statement into a
   # constructed type()) is a natural future extension here.
   _glpython_fallback_exec(node, scope)
-  _glpython_record(node, "exec", f"class {node.name}", None, _glpython_current_func())
+  _glpython_record(node, "exec", f"class {node.name}", None, _glpython_current_func(), _glpython_snapshot_locals(scope))
 
 def _exec_import(node, scope):
   _glpython_fallback_exec(node, scope)
-  _glpython_record(node, "exec", _glpython_node_source(node), None, _glpython_current_func())
+  _glpython_record(node, "exec", _glpython_node_source(node), None, _glpython_current_func(), _glpython_snapshot_locals(scope))
 
 def _exec_raise(node, scope):
   if node.exc is None:
