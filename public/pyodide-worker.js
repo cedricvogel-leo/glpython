@@ -377,12 +377,12 @@ def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_f
     "funcDefNodeId": getattr(glpython_function.node, "_glpython_id", None),
     "funcDefPath": glpython_function.def_path,
     "paramAnnotations": param_annotations or [],
-    # One entry per positionally-passed argument whose call-site expression
-    # node id is known: [call-site arg node id, bound parameter name]. Lets
-    # the UI draw an arrow from each argument's value at the call site
-    # straight into that parameter's own (one-step-early, valueless)
-    # placeholder row in the callee's about-to-open locals panel - see
-    # "argSources"/"nextStepPendingCall" on the frontend. Keyword args,
+    # The name of each plain positionally-passed parameter this call binds.
+    # Lets the UI draw an arrow from that parameter's bound value - shown
+    # one step early right in the callee's own "def f(n=3):" header via
+    # paramAnnotations above - into that parameter's own (one-step-early,
+    # valueless) placeholder row in the callee's about-to-open locals panel.
+    # See "argSources"/"nextStepPendingCall" on the frontend. Keyword args,
     # *args/**kwargs, and defaulted-but-omitted params are left out, same
     # simplification as paramAnnotations above only covering positional
     # params.
@@ -661,22 +661,25 @@ class _GlpythonFunction:
           if arg_node.arg in call_vars:
             arg_id = getattr(arg_node, "_glpython_id", None)
             if arg_id is not None:
-              param_annotations.append([arg_id, "=" + _glpython_safe_repr(call_vars[arg_node.arg])])
-        # Pair each plain positionally-passed call-site argument expression
-        # with the parameter name it's bound to, by index - mirrors the
-        # loop above but keyed off the call-site's own argument nodes
-        # instead of the function def's parameter nodes, since that's what
-        # the UI needs to anchor an arrow's *source* end. Starred ("*xs")
-        # arguments and anything passed by keyword aren't included, same
-        # simplification as elsewhere in this file.
+              # The parameter's own name is carried alongside its node id
+              # and "=value" text so the UI can match this annotation back
+              # to the matching entry in arg_sources below by name (the two
+              # lists aren't necessarily parallel/same-length, e.g. a
+              # defaulted-but-omitted param has no arg_sources entry).
+              param_annotations.append([arg_id, "=" + _glpython_safe_repr(call_vars[arg_node.arg]), arg_node.arg])
+        # The names of the plain positionally-passed parameters this call
+        # actually supplies a value for - lets the UI know which parameters
+        # to show as one-step-early placeholder rows (and which to draw a
+        # connector arrow for, from that parameter's own "=value" annotation
+        # in param_annotations above). Starred ("*xs") arguments and
+        # anything passed by keyword aren't included, same simplification
+        # as elsewhere in this file.
         arg_sources = []
         call_args = getattr(call_node, "args", None) or []
         for index, name in enumerate(positional_names):
           if index >= len(call_args) or isinstance(call_args[index], ast.Starred):
             continue
-          arg_id = getattr(call_args[index], "_glpython_id", None)
-          if arg_id is not None:
-            arg_sources.append([arg_id, name])
+          arg_sources.append(name)
         _glpython_record_call_enter(call_node, self, frame_id, parent_frame_id, _glpython_snapshot_locals(scope), param_annotations, arg_sources)
       try:
         _glpython_exec_stmts(self.node.body, scope)

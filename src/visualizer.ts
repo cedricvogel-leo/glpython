@@ -53,13 +53,18 @@ export type TraceStep = {
   parentFrameId: number | null
   funcDefNodeId: number | null
   funcDefPath: string | null
-  paramAnnotations: Array<[number, string]>
-  // Only present on "call-enter" steps: one [call-site arg node id, bound
-  // parameter name] pair per plain positional argument - lets the UI draw
-  // an arrow from each argument's value at the call site into that
-  // parameter's placeholder row, shown one step early in the about-to-open
-  // callee frame (see nextStepPendingCall in App.tsx).
-  argSources: Array<[number, string]>
+  // [param name node id, "=value" text, bound parameter name] per plain
+  // positional parameter. The name rides along so the UI can match an
+  // entry here back to the matching parameter name in argSources below
+  // (the two arrays aren't necessarily parallel/same-length).
+  paramAnnotations: Array<[number, string, string]>
+  // Only present on "call-enter" steps: the name of each plain
+  // positionally-passed parameter this call binds - lets the UI draw an
+  // arrow from that parameter's bound value (shown one step early right in
+  // the callee's own header via paramAnnotations above) into that
+  // parameter's own placeholder row, shown one step early in the
+  // about-to-open callee frame (see nextStepPendingCall in App.tsx).
+  argSources: Array<string>
   // Only present on the "eval" step of a Call node that just finished
   // running a user-defined function: the frame id that just closed, so the
   // UI knows this is the step where that frame's box collapses into this
@@ -280,7 +285,7 @@ export type OpenFrame = {
   // call site (e.g. calling into an imported module).
   funcDefPath: string
   funcDefNodeId: number
-  paramAnnotations: Array<[number, string]>
+  paramAnnotations: Array<[number, string, string]>
 }
 
 // Replays the trace up to (and including) `uptoStep`, returning every call
@@ -366,7 +371,13 @@ export function nodeHeadRange(node: AstNode, lineOffsets: number[]): { start: nu
 // applied - the inner one is naturally superseded once the outer node's own
 // step fires, which is exactly what produces the requested one-step-at-a-
 // time collapse (`2 + 3 * 4` -> `2 + 12` -> `14`).
-type MergedInsert = { start: number; end: number; value: string; kind: 'substitution' | 'annotation' }
+// `nodeId` is only ever set on 'annotation' inserts - it's the annotated
+// node's own id (e.g. a function parameter name's node in its "def ...:"),
+// carried through so the UI can later single out exactly this one
+// annotation's rendered span (e.g. to anchor a connector arrow at a
+// specific bound parameter's "=3", not just "some annotation on this
+// line").
+type MergedInsert = { start: number; end: number; value: string; kind: 'substitution' | 'annotation'; nodeId?: number }
 
 // Shared by applySubstitutions and locateNodeRenderedRange: the sorted list
 // of every text replacement/insert that would be spliced into `source`,
@@ -405,7 +416,7 @@ function buildMergedInserts(
   // hidden. Skip any annotation whose position falls inside a substituted
   // span, since that source text isn't visible to attach the annotation to
   // anymore.
-  const inserts: Array<{ start: number; end: number; value: string; kind: 'annotation' }> = []
+  const inserts: Array<{ start: number; end: number; value: string; kind: 'annotation'; nodeId: number }> = []
   for (const [nodeId, text] of annotations ?? []) {
     const node = nodeIndex.get(nodeId)
     if (!node) continue
@@ -413,7 +424,7 @@ function buildMergedInserts(
     if (!range) continue
     const hiddenBySubstitution = selected.some((s) => range.end > s.start && range.end < s.end)
     if (hiddenBySubstitution) continue
-    inserts.push({ start: range.end, end: range.end, value: text, kind: 'annotation' })
+    inserts.push({ start: range.end, end: range.end, value: text, kind: 'annotation', nodeId })
   }
 
   return [
@@ -465,7 +476,7 @@ export function applySubstitutions(
   nodeIndex: Map<number, AstNode>,
   substitutions: Map<number, string> | undefined,
   annotations?: Map<number, string>,
-): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number }> } {
+): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> } {
   if ((!substitutions || substitutions.size === 0) && (!annotations || annotations.size === 0)) {
     return { text: source, highlights: [], annotationHighlights: [] }
   }
@@ -475,14 +486,14 @@ export function applySubstitutions(
   let text = ''
   let cursor = 0
   const highlights: Array<{ start: number; end: number }> = []
-  const annotationHighlights: Array<{ start: number; end: number }> = []
-  for (const { start, end, value, kind } of merged) {
+  const annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> = []
+  for (const { start, end, value, kind, nodeId } of merged) {
     if (start < cursor) continue
     text += source.slice(cursor, start)
     const highlightStart = text.length
     text += value
     if (kind === 'substitution') highlights.push({ start: highlightStart, end: text.length })
-    else if (kind === 'annotation') annotationHighlights.push({ start: highlightStart, end: text.length })
+    else if (kind === 'annotation') annotationHighlights.push({ start: highlightStart, end: text.length, nodeId })
     cursor = end
   }
   text += source.slice(cursor)
@@ -513,14 +524,14 @@ export function renderFrameSource(
   clipRange: { start: number; end: number } | null,
   substitutions: Map<number, string> | undefined,
   annotations: Map<number, string> | undefined,
-): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number }> } | null {
+): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> } | null {
   const { text, highlights, annotationHighlights } = applySubstitutions(source, lineOffsets, nodeIndex, substitutions, annotations)
   if (!clipRange) return { text, highlights, annotationHighlights }
 
   const tailLength = source.length - clipRange.end
   const clippedEnd = text.length - tailLength
   const inClip = (r: { start: number; end: number }) => r.start >= clipRange.start && r.end <= clippedEnd
-  const shift = (r: { start: number; end: number }) => ({ start: r.start - clipRange.start, end: r.end - clipRange.start })
+  const shift = <T extends { start: number; end: number }>(r: T) => ({ ...r, start: r.start - clipRange.start, end: r.end - clipRange.start })
 
   return {
     text: text.slice(clipRange.start, clippedEnd),

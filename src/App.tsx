@@ -20,30 +20,22 @@ import './App.css'
 // entirely with a further-nested <CallFrameBox>, rendered inline exactly
 // where that text sat (see childRanges in buildLineSegments below).
 type LineSegment =
-  | { kind: 'text'; text: string; className?: string; argNodeId?: number }
+  | { kind: 'text'; text: string; className?: string; annotationNodeId?: number }
   | { kind: 'child'; frame: OpenFrame }
-  | { kind: 'group'; className: string; parts: Array<{ text: string; className?: string; argNodeId?: number }> }
+  | { kind: 'group'; className: string; parts: Array<{ text: string; className?: string }> }
 
 function buildLineSegments(
   line: string,
   lineStart: number,
   highlights: Array<{ start: number; end: number }>,
-  annotationHighlights: Array<{ start: number; end: number }>,
+  // `nodeId`, when present, identifies exactly which annotated node (e.g.
+  // a bound parameter name in a "def f(n=3):" header) this particular
+  // annotation belongs to - carried through to a `data-annotation-node-id`
+  // attribute below, so a connector arrow can anchor at one specific
+  // annotation instead of just "the nearest annotation on this line".
+  annotationHighlights: Array<{ start: number; end: number; nodeId?: number }>,
   childRanges: Array<{ start: number; end: number; frame: OpenFrame }>,
-  // `key`, when present, identifies exactly which call-site argument this
-  // particular next-step range belongs to (its AST node id) - so a
-  // function call about to run with several arguments at once still gets
-  // one individually-selectable highlighted span per argument (carried
-  // through to a `data-arg-node-id` attribute below), instead of one single
-  // span an arrow couldn't point at unambiguously.
-  nextStepRanges: Array<{ start: number; end: number; key?: number }>,
-  // A not-yet-really-open callee frame (the one synthesized early by
-  // `nextStepPendingCall`) whose preview box should appear right after its
-  // call site's own closing paren - unlike `childRanges`, this doesn't
-  // replace/consume any of the call's own text, so its argument values
-  // stay visible (and individually highlighted via `nextStepRanges` above)
-  // for the connector arrows to point from.
-  pendingChildMarkers: Array<{ at: number; frame: OpenFrame }> = [],
+  nextStepRanges: Array<{ start: number; end: number }>,
 ): LineSegment[] {
   const lineEnd = lineStart + line.length
   // A child's own call-site range replaces its text wholesale, so any
@@ -57,7 +49,7 @@ function buildLineSegments(
   // `className`) so that touching next-step marks can later be detected and
   // merged into one continuous box instead of leaving every mark to draw
   // its own outline - see the grouping pass below.
-  const marks: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; argNodeId?: number }> = []
+  const marks: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; annotationNodeId?: number }> = []
   for (const h of highlights) {
     if (insideChild(h.start, h.end)) continue
     const start = Math.max(h.start, lineStart)
@@ -68,21 +60,12 @@ function buildLineSegments(
     if (insideChild(h.start, h.end)) continue
     const start = Math.max(h.start, lineStart)
     const end = Math.min(h.end, lineEnd)
-    if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, className: 'visual-loop-annotation' })
+    if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, className: 'visual-loop-annotation', annotationNodeId: h.nodeId })
   }
   for (const c of childRanges) {
     const start = Math.max(c.start, lineStart)
     const end = Math.min(c.end, lineEnd)
     if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, frame: c.frame })
-  }
-  // Zero-width: doesn't consume/replace any text (unlike childRanges
-  // above), it's spliced in right at `at` so whatever came before it
-  // (the call's own, still-visible argument text) is left completely
-  // untouched.
-  for (const marker of pendingChildMarkers) {
-    if (marker.at < lineStart || marker.at > lineEnd) continue
-    const pos = marker.at - lineStart
-    marks.push({ start: pos, end: pos, frame: marker.frame })
   }
   // The exact AST node the *next* trace step (not yet applied, since
   // rendering is always clamped to uptoStep) is about to evaluate/execute -
@@ -108,16 +91,15 @@ function buildLineSegments(
       const mEnd = Math.min(m.end, end)
       if (mStart >= mEnd) continue
       if (m.frame) {
-        if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true, argNodeId: r.key })
+        if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true })
         cursor = Math.max(cursor, mEnd)
         continue
       }
-      if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true, argNodeId: r.key })
+      if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true })
       m.nextStep = true
-      m.argNodeId = r.key
       cursor = Math.max(cursor, mEnd)
     }
-    if (cursor < end) marks.push({ start: cursor, end, nextStep: true, argNodeId: r.key })
+    if (cursor < end) marks.push({ start: cursor, end, nextStep: true })
   }
   marks.sort((a, b) => a.start - b.start)
 
@@ -126,12 +108,12 @@ function buildLineSegments(
   // single group here so they render as one continuous highlighted box
   // instead of two dashed outlines meeting at a seam. Child-frame marks
   // never participate - they're their own nested component, not text.
-  const grouped: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; argNodeId?: number; parts?: Array<{ start: number; end: number; className?: string; argNodeId?: number }> }> = []
+  const grouped: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; annotationNodeId?: number; parts?: Array<{ start: number; end: number; className?: string }> }> = []
   for (const mark of marks) {
     const prev = grouped[grouped.length - 1]
     if (mark.nextStep && !mark.frame && prev && prev.nextStep && !prev.frame && prev.end === mark.start) {
-      if (!prev.parts) prev.parts = [{ start: prev.start, end: prev.end, className: prev.className, argNodeId: prev.argNodeId }]
-      prev.parts.push({ start: mark.start, end: mark.end, className: mark.className, argNodeId: mark.argNodeId })
+      if (!prev.parts) prev.parts = [{ start: prev.start, end: prev.end, className: prev.className }]
+      prev.parts.push({ start: mark.start, end: mark.end, className: mark.className })
       prev.end = mark.end
       continue
     }
@@ -145,10 +127,10 @@ function buildLineSegments(
     if (mark.frame) {
       segments.push({ kind: 'child', frame: mark.frame })
     } else if (mark.parts) {
-      segments.push({ kind: 'group', className: 'visual-next-step', parts: mark.parts.map((p) => ({ text: line.slice(p.start, p.end), className: p.className, argNodeId: p.argNodeId })) })
+      segments.push({ kind: 'group', className: 'visual-next-step', parts: mark.parts.map((p) => ({ text: line.slice(p.start, p.end), className: p.className })) })
     } else {
       const className = mark.nextStep ? (mark.className ? `${mark.className} visual-next-step` : 'visual-next-step') : mark.className
-      segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className, argNodeId: mark.argNodeId })
+      segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className, annotationNodeId: mark.annotationNodeId })
     }
     cursor2 = mark.end
   }
@@ -163,7 +145,7 @@ function buildLineSegments(
 // their own dedicated color instead (see the `className` branch below) and
 // are never re-tokenized.
 function TextSegment({ segment, monaco }: { segment: Extract<LineSegment, { kind: 'text' }>; monaco: Monaco | null }) {
-  if (segment.className || !monaco || segment.text === '') return <span className={segment.className} data-arg-node-id={segment.argNodeId}>{segment.text}</span>
+  if (segment.className || !monaco || segment.text === '') return <span className={segment.className} data-annotation-node-id={segment.annotationNodeId}>{segment.text}</span>
   const runs = tokenizePythonFragment(monaco, segment.text)
   return <>{runs.map((run, index) => <span key={index} className={run.className}>{run.text}</span>)}</>
 }
@@ -246,23 +228,18 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
   // frame's *own* rendered text (already-clipped to clipRange, exactly
   // matching rendered.text's coordinates) - so it can be spliced inline,
   // replacing that text, instead of appended as a separate row below it.
-  // A child whose own call hasn't actually started yet (it's merely the
-  // one-step-early preview frame from `nextStepPendingCall`) is the one
-  // exception: its call-site text is still what's about to be evaluated
-  // this very step (each argument individually highlighted above, as the
-  // source of a connector arrow), so it must stay visible rather than be
-  // replaced - its preview box is appended right after instead, via
-  // `pendingChildMarkers`.
+  // This includes a call whose own call hasn't actually started yet (the
+  // one-step-early preview frame from `nextStepPendingCall`) - its call
+  // site is swallowed just like any other child's, since the substituted
+  // value it would have shown is instead rendered one step early inside
+  // its own box's header (see nextStepPendingCall/paramAnnotations).
   const childRanges: Array<{ start: number; end: number; frame: OpenFrame }> = []
-  const pendingChildMarkers: Array<{ at: number; frame: OpenFrame }> = []
   for (const child of children) {
     const anchorNode = child.anchorPath === path ? nodeIndex.get(child.anchorNodeId) : undefined
     if (!anchorNode) continue
     const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, anchorNode)
     if (!range) continue
-    const isPending = nextStep?.kind === 'call-enter' && nextStep.frameId === child.frameId
-    if (isPending) pendingChildMarkers.push({ at: range.end - clipStart, frame: child })
-    else childRanges.push({ start: range.start - clipStart, end: range.end - clipStart, frame: child })
+    childRanges.push({ start: range.start - clipStart, end: range.end - clipStart, frame: child })
   }
 
   // The AST node the *next* trace step (uptoStep + 1) will touch, if that
@@ -277,23 +254,6 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
   const nextStepFrameId = nextStep == null ? null : nextStep.kind === 'call-enter' ? (nextStep.parentFrameId ?? 0) : nextStep.frameId
   const nextStepRanges = nextStep !== null && nextStepFrameId === frameId && nextStep.path === path
     ? (() => {
-        // A "call-enter" step with known argument sources highlights each
-        // positionally-passed argument expression individually (instead of
-        // the whole call) - one span per argument, carrying that
-        // argument's own AST node id as a key - so a multi-argument call
-        // gets one independently-selectable span per argument for the
-        // connector arrows drawn below (see nextStepPendingCall).
-        if (nextStep.kind === 'call-enter' && nextStep.argSources.length > 0) {
-          const ranges: Array<{ start: number; end: number; key: number }> = []
-          for (const [argNodeId] of nextStep.argSources) {
-            const argNode = nodeIndex.get(argNodeId)
-            if (!argNode) continue
-            const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, argNode, true)
-            if (!range) continue
-            ranges.push({ start: range.start - clipStart, end: range.end - clipStart, key: argNodeId })
-          }
-          return ranges
-        }
         const nextNode = nodeIndex.get(nextStep.nodeId)
         if (!nextNode) return []
         const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, nextNode, true)
@@ -325,7 +285,7 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
           const isCurrentLine = isFrameActive && currentStep?.line === absoluteLine
           const isExecutedLine = !isCurrentLine && executedLines?.has(absoluteLine) === true
           const lineStateClass = isCurrentLine ? ' visual-current-line' : isExecutedLine ? ' visual-executed-line' : ''
-          const segments = buildLineSegments(line, lineStart, rendered.highlights, rendered.annotationHighlights, childRanges, nextStepRanges, pendingChildMarkers)
+          const segments = buildLineSegments(line, lineStart, rendered.highlights, rendered.annotationHighlights, childRanges, nextStepRanges)
           const content = segments.map((segment, segmentIndex) => segment.kind === 'child' ? (
             <span key={segmentIndex} className="frame-child-zone">
               <Frame
@@ -347,7 +307,7 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
             </span>
           ) : segment.kind === 'group' ? (
             <span key={segmentIndex} className={segment.className}>
-              {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className} data-arg-node-id={part.argNodeId}>{part.text}</span>)}
+              {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className}>{part.text}</span>)}
             </span>
           ) : (
             <TextSegment key={segmentIndex} segment={segment} monaco={monaco} />
@@ -650,12 +610,16 @@ function App() {
   // entry one step early so it renders inline at its call site exactly
   // like any other open frame (see `framesForRender` below, merged into
   // the `openFrames` map handed down to <Frame>) - since no trace steps
-  // exist yet for that frame id, every locals/substitution/line lookup
-  // keyed off it naturally comes back empty, so it renders "for free" as a
-  // totally fresh, not-yet-started call. Also keeps the raw argSources
-  // list around, used to seed that frame's own parameters as valueless
-  // placeholder rows (`pendingCallLocals`) and as the source of the
-  // call-site -> placeholder connector arrows below.
+  // exist yet for that frame id, every locals/substitution lookup keyed
+  // off it naturally comes back empty, so it renders "for free" as a
+  // totally fresh, not-yet-started call - except its header already shows
+  // each bound parameter's real value one step early via paramAnnotations
+  // (exactly like a real open frame does, see the Frame component's
+  // `annotations` map), which is also where the connector arrows below
+  // originate from. Also keeps the raw argSources list around (now just
+  // each bound parameter's name, in parameter-def order), used to seed
+  // this frame's own parameters as valueless placeholder rows
+  // (`pendingCallLocals`).
   const nextStepPendingCall = useMemo(() => {
     if (!nextTraceStep || nextTraceStep.kind !== 'call-enter') return null
     if (nextTraceStep.funcDefNodeId === null || nextTraceStep.funcDefPath === null) return null
@@ -667,7 +631,7 @@ function App() {
       anchorNodeId: nextTraceStep.nodeId,
       funcDefPath: nextTraceStep.funcDefPath,
       funcDefNodeId: nextTraceStep.funcDefNodeId,
-      paramAnnotations: [],
+      paramAnnotations: nextTraceStep.paramAnnotations,
     }
     return { openFrame, argSources: nextTraceStep.argSources }
   }, [nextTraceStep])
@@ -715,7 +679,7 @@ function App() {
   }, [openFrames, nextStepPendingCall])
 
   const pendingCallLocals = useMemo(() => nextStepPendingCall
-    ? { frameId: nextStepPendingCall.openFrame.frameId, paramNames: nextStepPendingCall.argSources.map(([, paramName]) => paramName) }
+    ? { frameId: nextStepPendingCall.openFrame.frameId, paramNames: nextStepPendingCall.argSources }
     : null, [nextStepPendingCall])
 
   useLayoutEffect(() => {
@@ -759,14 +723,19 @@ function App() {
       if (varEl && codeEl) paths.push(pathBetween(nextStepVarSource ? varEl : codeEl, nextStepVarSource ? codeEl : varEl))
     }
 
-    // One arrow per positionally-passed call argument: from its value at
-    // the call site (identified by its own AST node id, via
-    // data-arg-node-id) straight into its matching parameter's placeholder
-    // row in the about-to-open callee frame.
+    // One arrow per bound parameter of the about-to-open callee frame:
+    // from that parameter's own annotation in the callee's own header
+    // (e.g. the "3" in "def fact(n=3):", identified by its AST node id via
+    // data-annotation-node-id - matched to this paramName via the callee's
+    // own paramAnnotations, since argSources is just a plain name list)
+    // into that parameter's placeholder row in the locals panel below it.
     if (nextStepPendingCall) {
       const calleeFrameId = nextStepPendingCall.openFrame.frameId
-      for (const [argNodeId, paramName] of nextStepPendingCall.argSources) {
-        const argEl = canvas.querySelector(`[data-arg-node-id="${argNodeId}"]`)
+      for (const paramName of nextStepPendingCall.argSources) {
+        const annotation = nextStepPendingCall.openFrame.paramAnnotations.find(([, , name]) => name === paramName)
+        if (!annotation) continue
+        const [nodeId] = annotation
+        const argEl = canvas.querySelector(`.frame-box[data-frame-id="${calleeFrameId}"] [data-annotation-node-id="${nodeId}"]`)
         const paramEl = canvas.querySelector(
           `.frame-box[data-frame-id="${calleeFrameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(paramName)}"] .locals-value`,
         )
