@@ -86,6 +86,7 @@ export type Translation = {
   visualizerNextStep: string
   visualizerPlay: string
   visualizerPause: string
+  visualizerAnimate: string
   visualizerLocals: string
   visualizerNoLocals: string
   visualizerError: (message: string) => string
@@ -173,6 +174,7 @@ export const translations: Record<Locale, Translation> = {
     visualizerNextStep: 'Next step',
     visualizerPlay: 'Play',
     visualizerPause: 'Pause',
+    visualizerAnimate: 'Animate steps',
     visualizerLocals: 'Variables',
     visualizerNoLocals: 'No variables yet.',
     visualizerError: (message) => `Visualizer error: ${message}`,
@@ -258,6 +260,7 @@ export const translations: Record<Locale, Translation> = {
     visualizerNextStep: 'Nächster Schritt',
     visualizerPlay: 'Abspielen',
     visualizerPause: 'Pause',
+    visualizerAnimate: 'Schritte animieren',
     visualizerLocals: 'Variablen',
     visualizerNoLocals: 'Noch keine Variablen.',
     visualizerError: (message) => `Fehler in der Visualisierung: ${message}`,

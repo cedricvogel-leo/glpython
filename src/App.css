@@ -35,3 +35,14 @@
 .frame-vars-empty { margin: 0; padding: 10px 17px; color: #6c7a73; font-size: 11px; font-style: italic; }
 .frame-child-zone { display: inline-block; }
 .py-tok-keyword { color: #569cd6; }.py-tok-string { color: #ce9178; }.py-tok-number { color: #b5cea8; }.py-tok-comment { color: #6a9955; font-style: italic; }.py-tok-decorator { color: #4ec9b0; }
+.visualizer-animate-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: #52645b; font-size: 11px; white-space: nowrap; cursor: pointer; user-select: none; }
+.visualizer-animate-toggle input { accent-color: #27725c; cursor: pointer; }
+.visualizer-animated .frame-line, .visualizer-animated .frame-line-row { transition: background-color .25s ease; }
+.visualizer-animated .visual-current-line, .visualizer-animated .visual-executed-line, .visualizer-animated .visual-substituted-value, .visualizer-animated .visual-next-step, .visualizer-animated .visual-loop-annotation { transition: background-color .25s ease, color .25s ease, outline-color .25s ease; }
+.visualizer-animated .locals-value { transition: color .2s ease; }
+.visualizer-animated .locals-value:not(.locals-value-pending) { animation: visual-value-pop .5s ease; }
+.visualizer-animated .frame-box:not(.frame-box--root) { animation: visual-fade-in .22s ease; }
+.visualizer-animated .locals-row { animation: visual-fade-in .22s ease; }
+.visualizer-animated .visualizer-connectors path { animation: visual-fade-in .3s ease; }
+@keyframes visual-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes visual-value-pop { from { background-color: rgba(255, 196, 92, .55); border-radius: 3px; } to { background-color: transparent; } }
