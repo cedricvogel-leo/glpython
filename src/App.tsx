@@ -591,7 +591,7 @@ function App() {
     const x2 = targetRect.right - canvasRect.left
     const y2 = targetRect.top - canvasRect.top + targetRect.height / 2
     const dx = Math.max(Math.abs(x2 - x1) * 0.5, 40)
-    setConnectorPath(`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`)
+    setConnectorPath(`M ${x1} ${y1} C ${x1 - dx} ${y1}, ${x2 + dx} ${y2}, ${x2} ${y2}`)
   }, [nextStepVarSource, currentTraceStep, openFrames])
 
   // Keeps the currently executing line in view as steps advance, with
