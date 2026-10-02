@@ -40,6 +40,17 @@ export const initialProject: Project = {
   },
 }
 
+// Whether any Python file in the project imports the `gturtle` module, in
+// any of its common forms (`import gturtle`, `import gturtle as t`,
+// `from gturtle import ...`). Used to auto-open the turtle graphics panel
+// only for projects that actually draw something, instead of showing it
+// by default for every project.
+const GTURTLE_IMPORT_PATTERN = /(^|\n)\s*(import\s+gturtle\b|from\s+gturtle\b)/
+
+export function projectImportsGturtle(project: Project): boolean {
+  return Object.values(project.files).some((file) => file.kind === 'python' && GTURTLE_IMPORT_PATTERN.test(file.code))
+}
+
 export function updateProjectFile(project: Project, path: string, code: string): Project {
   const file = project.files[path]
   if (!file) return project

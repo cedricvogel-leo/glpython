@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Editor, { useMonaco } from '@monaco-editor/react'
 import type { Monaco } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, ChevronDown, Cloud, Download, FileCode2, FolderOpen, GraduationCap, Languages, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pause, Pencil, Play, Plus, RotateCcw, Save, Settings2, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Trash2, Upload, UserRound, Workflow, X } from 'lucide-react'
-import { addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from './project'
+import { addProjectFile, deleteProjectFile, initialProject, projectImportsGturtle, renameProjectFile, updateProjectFile } from './project'
 import type { ProjectFileKind } from './project'
 import { initializeAuth, isAuthConfigured, signIn, signOut } from './auth'
 import type { AccountInfo } from '@azure/msal-browser'
@@ -356,7 +356,10 @@ function App() {
   const [account, setAccount] = useState<AccountInfo | null>(null)
   const [authErrorKey, setAuthErrorKey] = useState<'' | 'init' | 'config' | 'cancelled'>('')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
-  const [isGraphicsOpen, setIsGraphicsOpen] = useState(true)
+  // Closed by default; auto-opened by runCode/runVisualize once a project
+  // importing gturtle is actually run, instead of always showing an empty
+  // panel for projects that never draw anything.
+  const [isGraphicsOpen, setIsGraphicsOpen] = useState(false)
   const [inputRequest, setInputRequest] = useState<string | null>(null)
   const [inputValue, setInputValue] = useState('')
   const [isVisualizerLoading, setIsVisualizerLoading] = useState(false)
@@ -533,6 +536,7 @@ function App() {
   }
   const runCode = () => {
     if (!workerRef.current) return
+    if (projectImportsGturtle(project)) setIsGraphicsOpen(true)
     setIsRunning(true); setOutput(t.runningOutput(project.mainFile))
     workerRef.current.postMessage({
       type: 'run',
@@ -544,6 +548,7 @@ function App() {
   }
   const runVisualize = () => {
     if (!workerRef.current) return
+    if (projectImportsGturtle(project)) setIsGraphicsOpen(true)
     setIsVisualizerLoading(true)
     setIsVisualPlaying(false)
     const sources = Object.fromEntries(Object.entries(project.files).map(([path, file]) => [path, file.code]))
