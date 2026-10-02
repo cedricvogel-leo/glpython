@@ -400,20 +400,25 @@ function buildMergedInserts(
   substitutions: Map<number, string> | undefined,
   annotations: Map<number, string> | undefined,
 ): MergedInsert[] {
-  const candidates: Array<{ start: number; end: number; value: string }> = []
+  const candidates: Array<{ start: number; end: number; value: string; nodeId: number }> = []
   for (const [nodeId, value] of substitutions ?? []) {
     const node = nodeIndex.get(nodeId)
     if (!node) continue
     const range = nodeRange(node, lineOffsets)
     if (!range) continue
-    candidates.push({ ...range, value })
+    candidates.push({ ...range, value, nodeId })
   }
 
   // Larger spans first, so a containing node is selected before any
   // descendant node whose span it fully covers.
   candidates.sort((a, b) => (b.end - b.start) - (a.end - a.start))
 
-  const selected: Array<{ start: number; end: number; value: string }> = []
+  // `nodeId` rides along on each selected substitution (not just
+  // annotations) so the UI can later find exactly which rendered span holds
+  // one particular substituted value - e.g. to animate a function's return
+  // value flying straight into the span that's about to show it, instead of
+  // a disconnected floating copy (see nextStepReturnFlight in App.tsx).
+  const selected: Array<{ start: number; end: number; value: string; nodeId: number }> = []
   for (const candidate of candidates) {
     const overlapsSelected = selected.some((s) => candidate.start >= s.start && candidate.end <= s.end)
     if (!overlapsSelected) selected.push(candidate)
@@ -485,7 +490,7 @@ export function applySubstitutions(
   nodeIndex: Map<number, AstNode>,
   substitutions: Map<number, string> | undefined,
   annotations?: Map<number, string>,
-): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> } {
+): { text: string; highlights: Array<{ start: number; end: number; nodeId?: number }>; annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> } {
   if ((!substitutions || substitutions.size === 0) && (!annotations || annotations.size === 0)) {
     return { text: source, highlights: [], annotationHighlights: [] }
   }
@@ -494,14 +499,14 @@ export function applySubstitutions(
 
   let text = ''
   let cursor = 0
-  const highlights: Array<{ start: number; end: number }> = []
+  const highlights: Array<{ start: number; end: number; nodeId?: number }> = []
   const annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> = []
   for (const { start, end, value, kind, nodeId } of merged) {
     if (start < cursor) continue
     text += source.slice(cursor, start)
     const highlightStart = text.length
     text += value
-    if (kind === 'substitution') highlights.push({ start: highlightStart, end: text.length })
+    if (kind === 'substitution') highlights.push({ start: highlightStart, end: text.length, nodeId })
     else if (kind === 'annotation') annotationHighlights.push({ start: highlightStart, end: text.length, nodeId })
     cursor = end
   }
@@ -533,7 +538,7 @@ export function renderFrameSource(
   clipRange: { start: number; end: number } | null,
   substitutions: Map<number, string> | undefined,
   annotations: Map<number, string> | undefined,
-): { text: string; highlights: Array<{ start: number; end: number }>; annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> } | null {
+): { text: string; highlights: Array<{ start: number; end: number; nodeId?: number }>; annotationHighlights: Array<{ start: number; end: number; nodeId?: number }> } | null {
   const { text, highlights, annotationHighlights } = applySubstitutions(source, lineOffsets, nodeIndex, substitutions, annotations)
   if (!clipRange) return { text, highlights, annotationHighlights }
 

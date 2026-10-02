@@ -59,6 +59,22 @@
   to { transform: translate(0, 0) scale(1); }
 }
 @keyframes visual-value-pop { from { background-color: rgba(255, 196, 92, .55); border-radius: 3px; } to { background-color: transparent; } }
+/* A function call collapsing into its return value doesn't draw an arrow at
+   all: the real `.visual-substituted-value` span that replaces the
+   call/box once it closes is itself flown in from the return site, via the
+   --return-dx/--return-dy offset the layout effect stashes on it in
+   App.tsx (same FLIP-style technique as `visual-frame-grow` above, just
+   translate rather than translate+scale). Applied unconditionally to every
+   substituted value - ordinary substitutions simply default to a zero
+   offset, i.e. no visible motion at all. `display: inline-block` is needed
+   for the transform to take effect, since these spans otherwise lay out as
+   plain inline text. */
+.visual-substituted-value { display: inline-block; }
+.visualizer-animated .visual-substituted-value { animation: visual-return-fly-in .4s ease-out backwards; }
+@keyframes visual-return-fly-in {
+  from { transform: translate(var(--return-dx, 0px), var(--return-dy, 0px)); }
+  to { transform: translate(0, 0); }
+}
 .visualizer-flights { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
 .visual-flight-value { position: absolute; top: 0; left: 0; offset-rotate: 0deg; transform: translate(-50%, -50%); background: rgba(255, 212, 121, .95); color: #1a1500; padding: 0 5px; border-radius: 3px; font: 12px/18px 'JetBrains Mono', monospace; white-space: nowrap; animation: visual-flight-move .6s ease-out forwards; }
 .visualizer-connectors path.visual-flight-arrow { animation: visual-flight-arrow-fade .6s ease-out forwards; }

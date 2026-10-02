@@ -24,17 +24,18 @@ const animationsStorageKey = 'glpython-visualizer-animations'
 type LineSegment =
   | { kind: 'text'; text: string; className?: string; annotationNodeId?: number }
   | { kind: 'child'; frame: OpenFrame }
-  | { kind: 'group'; className: string; parts: Array<{ text: string; className?: string }> }
+  | { kind: 'group'; className: string; parts: Array<{ text: string; className?: string; annotationNodeId?: number }> }
 
 function buildLineSegments(
   line: string,
   lineStart: number,
-  highlights: Array<{ start: number; end: number }>,
-  // `nodeId`, when present, identifies exactly which annotated node (e.g.
-  // a bound parameter name in a "def f(n=3):" header) this particular
-  // annotation belongs to - carried through to a `data-annotation-node-id`
-  // attribute below, so a connector arrow can anchor at one specific
-  // annotation instead of just "the nearest annotation on this line".
+  // `nodeId`, when present, identifies exactly which AST node (e.g. a Call
+  // node that just got substituted with its return value) this particular
+  // highlight belongs to - carried through to a `data-annotation-node-id`
+  // attribute below, so a connector/flight can anchor at one specific
+  // substitution instead of just "the nearest one on this line" (see
+  // nextStepReturnFlight's use of it further down).
+  highlights: Array<{ start: number; end: number; nodeId?: number }>,
   annotationHighlights: Array<{ start: number; end: number; nodeId?: number }>,
   childRanges: Array<{ start: number; end: number; frame: OpenFrame }>,
   nextStepRanges: Array<{ start: number; end: number }>,
@@ -56,7 +57,7 @@ function buildLineSegments(
     if (insideChild(h.start, h.end)) continue
     const start = Math.max(h.start, lineStart)
     const end = Math.min(h.end, lineEnd)
-    if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, className: 'visual-substituted-value' })
+    if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, className: 'visual-substituted-value', annotationNodeId: h.nodeId })
   }
   for (const h of annotationHighlights) {
     if (insideChild(h.start, h.end)) continue
@@ -110,12 +111,12 @@ function buildLineSegments(
   // single group here so they render as one continuous highlighted box
   // instead of two dashed outlines meeting at a seam. Child-frame marks
   // never participate - they're their own nested component, not text.
-  const grouped: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; annotationNodeId?: number; parts?: Array<{ start: number; end: number; className?: string }> }> = []
+  const grouped: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; annotationNodeId?: number; parts?: Array<{ start: number; end: number; className?: string; annotationNodeId?: number }> }> = []
   for (const mark of marks) {
     const prev = grouped[grouped.length - 1]
     if (mark.nextStep && !mark.frame && prev && prev.nextStep && !prev.frame && prev.end === mark.start) {
-      if (!prev.parts) prev.parts = [{ start: prev.start, end: prev.end, className: prev.className }]
-      prev.parts.push({ start: mark.start, end: mark.end, className: mark.className })
+      if (!prev.parts) prev.parts = [{ start: prev.start, end: prev.end, className: prev.className, annotationNodeId: prev.annotationNodeId }]
+      prev.parts.push({ start: mark.start, end: mark.end, className: mark.className, annotationNodeId: mark.annotationNodeId })
       prev.end = mark.end
       continue
     }
@@ -129,7 +130,7 @@ function buildLineSegments(
     if (mark.frame) {
       segments.push({ kind: 'child', frame: mark.frame })
     } else if (mark.parts) {
-      segments.push({ kind: 'group', className: 'visual-next-step', parts: mark.parts.map((p) => ({ text: line.slice(p.start, p.end), className: p.className })) })
+      segments.push({ kind: 'group', className: 'visual-next-step', parts: mark.parts.map((p) => ({ text: line.slice(p.start, p.end), className: p.className, annotationNodeId: p.annotationNodeId })) })
     } else {
       const className = mark.nextStep ? (mark.className ? `${mark.className} visual-next-step` : 'visual-next-step') : mark.className
       segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className, annotationNodeId: mark.annotationNodeId })
@@ -309,7 +310,7 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
             </span>
           ) : segment.kind === 'group' ? (
             <span key={segmentIndex} className={segment.className}>
-              {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className}>{part.text}</span>)}
+              {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className} data-annotation-node-id={part.annotationNodeId}>{part.text}</span>)}
             </span>
           ) : (
             <TextSegment key={segmentIndex} segment={segment} monaco={monaco} />
@@ -663,19 +664,6 @@ function App() {
     return { frameId: nextTraceStep.lookupFrameId, varName: nextTraceStep.lookupName }
   }, [nextTraceStep])
 
-  // When the pending next step closes a callee frame (its own "eval" step
-  // for the Call node, once the callee has fully returned - see
-  // `closesFrameId` on TraceStep), note which frame is about to collapse
-  // and the value it's collapsing into - so an arrow can be drawn, and
-  // later a flying copy of that value animated, from inside the
-  // about-to-close frame-box out to wherever its call expression sits in
-  // the parent (the box's own position, since it's rendered inline right
-  // there and about to be replaced by this plain value once it closes).
-  const nextStepReturnFlight = useMemo(() => {
-    if (!nextTraceStep || nextTraceStep.closesFrameId === null || nextTraceStep.valueText === null) return null
-    return { frameId: nextTraceStep.closesFrameId, value: nextTraceStep.valueText }
-  }, [nextTraceStep])
-
   // SVG paths (in the coordinate space of .visualizer-canvas) for the
   // arrows above, measured straight from the rendered DOM once per
   // relevant change - there's no other reliable way to know where either
@@ -696,8 +684,12 @@ function App() {
   // (see `growListenerRef` below) - measuring any earlier would read back
   // the box's still-shrunken, mid-flight geometry. `x1`/`y1` are the
   // connector's source anchor point (canvas-relative), kept around so the
-  // box-origin logic can reuse it without re-measuring the DOM.
-  type Connector = { d: string; value: string; kind: 'var' | 'funcLookup' | 'arg' | 'return'; x1: number; y1: number }
+  // box-origin logic can reuse it without re-measuring the DOM. A return
+  // value collapsing into its call site is handled separately, below (see
+  // `pendingReturnOriginRef`) - it never draws an arrow at all, instead
+  // flying the real destination span in directly, so it has no 'return'
+  // entry in this union.
+  type Connector = { d: string; value: string; kind: 'var' | 'funcLookup' | 'arg'; x1: number; y1: number }
   const [connectorPaths, setConnectorPaths] = useState<Connector[]>([])
 
   // Short-lived "value flying along the arrow it just consumed" ghosts,
@@ -708,6 +700,15 @@ function App() {
   const [flights, setFlights] = useState<{ id: number; d: string; value: string }[]>([])
   const flightIdRef = useRef(0)
   const prevConnectorsRef = useRef<Connector[]>([])
+  // The about-to-close callee frame's own return-line position, measured
+  // while the box is still open and stashed here so the *next* effect run -
+  // once the frame has actually closed and the parent's substituted-value
+  // span for this call has been freshly mounted in its place - can compute
+  // how far that real span needs to fly in from (see the 'return value
+  // flight' block in the effect below). Unlike `prevConnectorsRef`, this
+  // never backs a visible arrow; it's pure bookkeeping for one single
+  // pending transition at a time (a frame can only close once).
+  const pendingReturnOriginRef = useRef<{ nodeId: number; parentFrameId: number; x: number; y: number } | null>(null)
   // Tracks the one 'animationend' listener (if any) currently waiting on a
   // freshly-opened callee frame-box's grow animation, so a later effect run
   // (e.g. the user stepping again before it fires) can detach it instead of
@@ -738,6 +739,23 @@ function App() {
     () => visualTrace ? computeOpenFramesUpTo(visualTrace.trace, currentTraceStep?.step ?? -1) : new Map<number, OpenFrame>(),
     [visualTrace, currentTraceStep],
   )
+
+  // When the pending next step closes a callee frame (its own "eval" step
+  // for the Call node, once the callee has fully returned - see
+  // `closesFrameId` on TraceStep), note which frame is about to collapse,
+  // the call node whose substituted-value span will appear in its place
+  // once the frame is gone, and which parent frame that span renders
+  // inside - so the layout effect below can, once the frame actually
+  // closes, find that exact newly-mounted span (via its
+  // `data-annotation-node-id`, scoped to the parent frame-box so same-nodeId
+  // spans from other simultaneously-open recursive calls aren't matched by
+  // mistake) and have it fly in from the collapsing box's old position,
+  // rather than drawing a connecting arrow.
+  const nextStepReturnFlight = useMemo(() => {
+    if (!nextTraceStep || nextTraceStep.closesFrameId === null || nextTraceStep.valueText === null) return null
+    const parentFrameId = openFrames.get(nextTraceStep.closesFrameId)?.parentFrameId ?? 0
+    return { frameId: nextTraceStep.closesFrameId, nodeId: nextTraceStep.nodeId, parentFrameId }
+  }, [nextTraceStep, openFrames])
 
   // `openFrames` plus, when applicable, the one synthetic "about to open"
   // callee frame from `nextStepPendingCall` above - this is what actually
@@ -770,7 +788,7 @@ function App() {
     // deferred per-argument measurement below can re-measure the canvas
     // fresh once the callee frame-box's grow animation has actually
     // finished, instead of reusing a rect captured while it was still mid-flight.
-    const pathBetween = (sourceEl: Element, targetEl: Element, kind: Connector['kind'], rect: DOMRect, valueOverride?: string): Connector => {
+    const pathBetween = (sourceEl: Element, targetEl: Element, kind: Connector['kind'], rect: DOMRect): Connector => {
       const sourceRect = sourceEl.getBoundingClientRect()
       const targetRect = targetEl.getBoundingClientRect()
       const y1 = sourceRect.top - rect.top + sourceRect.height / 2
@@ -782,12 +800,7 @@ function App() {
       // Strip a leading "=" from parameter-annotation sources (e.g. the
       // "=3" shown next to "n" in "def fact(n=3):") so the flying copy
       // reads as a plain value, matching what lands in the locals row.
-      // `valueOverride` lets a caller supply the authoritative text itself
-      // instead (used for the return-flight connector below, since its
-      // source element is a whole "return ..." line rather than a span
-      // containing just the value - and a base-case literal return like
-      // "return 1" has no dedicated value span to read from at all).
-      const value = valueOverride ?? (sourceEl.textContent?.trim() ?? '').replace(/^=/, '')
+      const value = (sourceEl.textContent?.trim() ?? '').replace(/^=/, '')
       return { d: `M ${x1} ${y1} C ${x1 + dx * dir} ${y1}, ${x2 - dx * dir} ${y2}, ${x2} ${y2}`, value, kind, x1, y1 }
     }
 
@@ -822,25 +835,27 @@ function App() {
       if (funcEl && codeEl) paths.push(pathBetween(funcEl, codeEl, 'funcLookup', canvasRect))
     }
 
-    // "nextStepReturnFlight": the about-to-close callee frame-box's own
-    // current (return) line flowing out into the box's own header line -
-    // the box renders inline right at its call site, so its own position
-    // is exactly where the plain substituted value will land once it
-    // collapses this step. Can't target `.visual-next-step` here like the
-    // other connectors above: the call expression's own AST range is still
-    // entirely swallowed by this still-open child box (see the
-    // `insideChild` carve-out in `buildLineSegments`), so there's no bare
-    // text span to point at yet. Sourcing from the whole return line
-    // (rather than hunting for a `.visual-substituted-value` span inside
-    // it) and overriding the flown text with this step's own `valueText`
-    // also sidesteps the base-case literal-return edge case, where the
-    // returned value is plain, un-substituted source text with no
-    // dedicated span of its own (e.g. `return 1`).
+    // "nextStepReturnFlight": measure (while the callee frame-box is still
+    // open) the canvas-relative point its own current (return) line sits
+    // at - this is "the return site" the value is flying from. No arrow is
+    // drawn for it; the point is just stashed in `pendingReturnOriginRef`
+    // for the *next* effect run to pick up once the frame has actually
+    // closed, at which point the parent's freshly-substituted value span
+    // for this exact call (found via `nodeId`, scoped to `parentFrameId` -
+    // see below) gets flown in from this very point instead.
+    let currentReturnOrigin: { nodeId: number; parentFrameId: number; x: number; y: number } | null = null
     if (nextStepReturnFlight) {
       const boxEl = canvas.querySelector(`.frame-box[data-frame-id="${nextStepReturnFlight.frameId}"]`)
       const lineEl = boxEl?.querySelector('.visual-current-line')
-      const headerEl = boxEl?.querySelector(':scope > .frame-code > .frame-line:first-child')
-      if (lineEl && (headerEl ?? boxEl)) paths.push(pathBetween(lineEl, headerEl ?? boxEl!, 'return', canvasRect, nextStepReturnFlight.value))
+      if (lineEl) {
+        const lineRect = lineEl.getBoundingClientRect()
+        currentReturnOrigin = {
+          nodeId: nextStepReturnFlight.nodeId,
+          parentFrameId: nextStepReturnFlight.parentFrameId,
+          x: lineRect.left - canvasRect.left + lineRect.width / 2,
+          y: lineRect.top - canvasRect.top + lineRect.height / 2,
+        }
+      }
     }
 
     // One arrow per bound parameter of the about-to-open callee frame:
@@ -958,8 +973,35 @@ function App() {
       // Matches the `.visual-flight-move` / `.visual-flight-arrow-fade` animation duration in App.css.
       window.setTimeout(() => setFlights((current) => current.filter((f) => !ids.includes(f.id))), 600)
     }
+
+    // The return-flight counterpart of the above: stepping forward past a
+    // return-collapse makes the callee frame-box (whose return line we
+    // measured and stashed last render) actually disappear, replaced by a
+    // plain `.visual-substituted-value` span back in the parent - find that
+    // exact freshly-mounted span by its nodeId (scoped to its parent
+    // frame-box) and set its own `--return-dx`/`--return-dy` offset to the
+    // delta from the stashed return-site point, so the `visual-return-fly-in`
+    // keyframe in App.css (applied unconditionally to every substituted
+    // value, default offset zero) animates this real element in from there -
+    // no arrow, no separate ghost copy, just the actual value sliding into
+    // place from where it was computed.
+    if (steppedForward && animationsEnabledRef.current && pendingReturnOriginRef.current) {
+      const origin = pendingReturnOriginRef.current
+      const destEl = canvas.querySelector(
+        `.frame-box[data-frame-id="${origin.parentFrameId}"] [data-annotation-node-id="${origin.nodeId}"].visual-substituted-value`,
+      )
+      if (destEl instanceof HTMLElement) {
+        const destRect = destEl.getBoundingClientRect()
+        const destX = destRect.left - canvasRect.left + destRect.width / 2
+        const destY = destRect.top - canvasRect.top + destRect.height / 2
+        destEl.style.setProperty('--return-dx', `${origin.x - destX}px`)
+        destEl.style.setProperty('--return-dy', `${origin.y - destY}px`)
+      }
+    }
+
     prevConnectorsRef.current = paths
     prevStepIndexRef.current = clampedStepIndex
+    pendingReturnOriginRef.current = currentReturnOrigin
 
     setConnectorPaths(paths)
   }, [nextStepVarSource, nextStepDeclareTarget, nextStepPendingCall, nextStepFuncLookup, nextStepReturnFlight, currentTraceStep, openFrames, clampedStepIndex])
