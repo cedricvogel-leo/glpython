@@ -338,6 +338,7 @@ def _glpython_record(node, kind, label, value_text=None, func_name="<module>", e
     "funcDefNodeId": None,
     "funcDefPath": None,
     "paramAnnotations": [],
+    "argSources": [],
     # Set only on the "eval" step of a Call node that just finished running
     # a user-defined function - tells the UI which frame's box just closed
     # and should collapse to this step's substituted return value.
@@ -346,7 +347,7 @@ def _glpython_record(node, kind, label, value_text=None, func_name="<module>", e
   _glpython_trace_log.append(entry)
   _glpython_step_count += 1
 
-def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_frame_id, extra_locals, param_annotations):
+def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_frame_id, extra_locals, param_annotations, arg_sources=None):
   global _glpython_step_count
   if _glpython_step_count >= _GLPYTHON_MAX_STEPS:
     raise _GlpythonTraceLimit()
@@ -376,6 +377,16 @@ def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_f
     "funcDefNodeId": getattr(glpython_function.node, "_glpython_id", None),
     "funcDefPath": glpython_function.def_path,
     "paramAnnotations": param_annotations or [],
+    # One entry per positionally-passed argument whose call-site expression
+    # node id is known: [call-site arg node id, bound parameter name]. Lets
+    # the UI draw an arrow from each argument's value at the call site
+    # straight into that parameter's own (one-step-early, valueless)
+    # placeholder row in the callee's about-to-open locals panel - see
+    # "argSources"/"nextStepPendingCall" on the frontend. Keyword args,
+    # *args/**kwargs, and defaulted-but-omitted params are left out, same
+    # simplification as paramAnnotations above only covering positional
+    # params.
+    "argSources": arg_sources or [],
     "closesFrameId": None,
   }
   _glpython_trace_log.append(entry)
@@ -651,7 +662,22 @@ class _GlpythonFunction:
             arg_id = getattr(arg_node, "_glpython_id", None)
             if arg_id is not None:
               param_annotations.append([arg_id, "=" + _glpython_safe_repr(call_vars[arg_node.arg])])
-        _glpython_record_call_enter(call_node, self, frame_id, parent_frame_id, _glpython_snapshot_locals(scope), param_annotations)
+        # Pair each plain positionally-passed call-site argument expression
+        # with the parameter name it's bound to, by index - mirrors the
+        # loop above but keyed off the call-site's own argument nodes
+        # instead of the function def's parameter nodes, since that's what
+        # the UI needs to anchor an arrow's *source* end. Starred ("*xs")
+        # arguments and anything passed by keyword aren't included, same
+        # simplification as elsewhere in this file.
+        arg_sources = []
+        call_args = getattr(call_node, "args", None) or []
+        for index, name in enumerate(positional_names):
+          if index >= len(call_args) or isinstance(call_args[index], ast.Starred):
+            continue
+          arg_id = getattr(call_args[index], "_glpython_id", None)
+          if arg_id is not None:
+            arg_sources.append([arg_id, name])
+        _glpython_record_call_enter(call_node, self, frame_id, parent_frame_id, _glpython_snapshot_locals(scope), param_annotations, arg_sources)
       try:
         _glpython_exec_stmts(self.node.body, scope)
         return None

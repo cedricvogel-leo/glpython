@@ -20,9 +20,9 @@ import './App.css'
 // entirely with a further-nested <CallFrameBox>, rendered inline exactly
 // where that text sat (see childRanges in buildLineSegments below).
 type LineSegment =
-  | { kind: 'text'; text: string; className?: string }
+  | { kind: 'text'; text: string; className?: string; argNodeId?: number }
   | { kind: 'child'; frame: OpenFrame }
-  | { kind: 'group'; className: string; parts: Array<{ text: string; className?: string }> }
+  | { kind: 'group'; className: string; parts: Array<{ text: string; className?: string; argNodeId?: number }> }
 
 function buildLineSegments(
   line: string,
@@ -30,7 +30,20 @@ function buildLineSegments(
   highlights: Array<{ start: number; end: number }>,
   annotationHighlights: Array<{ start: number; end: number }>,
   childRanges: Array<{ start: number; end: number; frame: OpenFrame }>,
-  nextStepRanges: Array<{ start: number; end: number }>,
+  // `key`, when present, identifies exactly which call-site argument this
+  // particular next-step range belongs to (its AST node id) - so a
+  // function call about to run with several arguments at once still gets
+  // one individually-selectable highlighted span per argument (carried
+  // through to a `data-arg-node-id` attribute below), instead of one single
+  // span an arrow couldn't point at unambiguously.
+  nextStepRanges: Array<{ start: number; end: number; key?: number }>,
+  // A not-yet-really-open callee frame (the one synthesized early by
+  // `nextStepPendingCall`) whose preview box should appear right after its
+  // call site's own closing paren - unlike `childRanges`, this doesn't
+  // replace/consume any of the call's own text, so its argument values
+  // stay visible (and individually highlighted via `nextStepRanges` above)
+  // for the connector arrows to point from.
+  pendingChildMarkers: Array<{ at: number; frame: OpenFrame }> = [],
 ): LineSegment[] {
   const lineEnd = lineStart + line.length
   // A child's own call-site range replaces its text wholesale, so any
@@ -44,7 +57,7 @@ function buildLineSegments(
   // `className`) so that touching next-step marks can later be detected and
   // merged into one continuous box instead of leaving every mark to draw
   // its own outline - see the grouping pass below.
-  const marks: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean }> = []
+  const marks: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; argNodeId?: number }> = []
   for (const h of highlights) {
     if (insideChild(h.start, h.end)) continue
     const start = Math.max(h.start, lineStart)
@@ -61,6 +74,15 @@ function buildLineSegments(
     const start = Math.max(c.start, lineStart)
     const end = Math.min(c.end, lineEnd)
     if (start < end) marks.push({ start: start - lineStart, end: end - lineStart, frame: c.frame })
+  }
+  // Zero-width: doesn't consume/replace any text (unlike childRanges
+  // above), it's spliced in right at `at` so whatever came before it
+  // (the call's own, still-visible argument text) is left completely
+  // untouched.
+  for (const marker of pendingChildMarkers) {
+    if (marker.at < lineStart || marker.at > lineEnd) continue
+    const pos = marker.at - lineStart
+    marks.push({ start: pos, end: pos, frame: marker.frame })
   }
   // The exact AST node the *next* trace step (not yet applied, since
   // rendering is always clamped to uptoStep) is about to evaluate/execute -
@@ -86,15 +108,16 @@ function buildLineSegments(
       const mEnd = Math.min(m.end, end)
       if (mStart >= mEnd) continue
       if (m.frame) {
-        if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true })
+        if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true, argNodeId: r.key })
         cursor = Math.max(cursor, mEnd)
         continue
       }
-      if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true })
+      if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true, argNodeId: r.key })
       m.nextStep = true
+      m.argNodeId = r.key
       cursor = Math.max(cursor, mEnd)
     }
-    if (cursor < end) marks.push({ start: cursor, end, nextStep: true })
+    if (cursor < end) marks.push({ start: cursor, end, nextStep: true, argNodeId: r.key })
   }
   marks.sort((a, b) => a.start - b.start)
 
@@ -103,12 +126,12 @@ function buildLineSegments(
   // single group here so they render as one continuous highlighted box
   // instead of two dashed outlines meeting at a seam. Child-frame marks
   // never participate - they're their own nested component, not text.
-  const grouped: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; parts?: Array<{ start: number; end: number; className?: string }> }> = []
+  const grouped: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; argNodeId?: number; parts?: Array<{ start: number; end: number; className?: string; argNodeId?: number }> }> = []
   for (const mark of marks) {
     const prev = grouped[grouped.length - 1]
     if (mark.nextStep && !mark.frame && prev && prev.nextStep && !prev.frame && prev.end === mark.start) {
-      if (!prev.parts) prev.parts = [{ start: prev.start, end: prev.end, className: prev.className }]
-      prev.parts.push({ start: mark.start, end: mark.end, className: mark.className })
+      if (!prev.parts) prev.parts = [{ start: prev.start, end: prev.end, className: prev.className, argNodeId: prev.argNodeId }]
+      prev.parts.push({ start: mark.start, end: mark.end, className: mark.className, argNodeId: mark.argNodeId })
       prev.end = mark.end
       continue
     }
@@ -116,20 +139,20 @@ function buildLineSegments(
   }
 
   const segments: LineSegment[] = []
-  let cursor = 0
+  let cursor2 = 0
   for (const mark of grouped) {
-    if (mark.start > cursor) segments.push({ kind: 'text', text: line.slice(cursor, mark.start) })
+    if (mark.start > cursor2) segments.push({ kind: 'text', text: line.slice(cursor2, mark.start) })
     if (mark.frame) {
       segments.push({ kind: 'child', frame: mark.frame })
     } else if (mark.parts) {
-      segments.push({ kind: 'group', className: 'visual-next-step', parts: mark.parts.map((p) => ({ text: line.slice(p.start, p.end), className: p.className })) })
+      segments.push({ kind: 'group', className: 'visual-next-step', parts: mark.parts.map((p) => ({ text: line.slice(p.start, p.end), className: p.className, argNodeId: p.argNodeId })) })
     } else {
       const className = mark.nextStep ? (mark.className ? `${mark.className} visual-next-step` : 'visual-next-step') : mark.className
-      segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className })
+      segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className, argNodeId: mark.argNodeId })
     }
-    cursor = mark.end
+    cursor2 = mark.end
   }
-  if (cursor < line.length || segments.length === 0) segments.push({ kind: 'text', text: line.slice(cursor) })
+  if (cursor2 < line.length || segments.length === 0) segments.push({ kind: 'text', text: line.slice(cursor2) })
   return segments
 }
 
@@ -140,7 +163,7 @@ function buildLineSegments(
 // their own dedicated color instead (see the `className` branch below) and
 // are never re-tokenized.
 function TextSegment({ segment, monaco }: { segment: Extract<LineSegment, { kind: 'text' }>; monaco: Monaco | null }) {
-  if (segment.className || !monaco || segment.text === '') return <span className={segment.className}>{segment.text}</span>
+  if (segment.className || !monaco || segment.text === '') return <span className={segment.className} data-arg-node-id={segment.argNodeId}>{segment.text}</span>
   const runs = tokenizePythonFragment(monaco, segment.text)
   return <>{runs.map((run, index) => <span key={index} className={run.className}>{run.text}</span>)}</>
 }
@@ -168,6 +191,13 @@ type FrameProps = {
   // one step early as a valueless placeholder row, so an arrow can point
   // from the upcoming value/def in the code to where it's about to land.
   declareTarget: { frameId: number; varName: string } | null
+  // Parameter names of a user-defined function call about to start running
+  // (`nextStep.kind === 'call-enter'`) that don't have values yet - shown
+  // one step early as valueless placeholder rows in that about-to-open
+  // callee frame (itself already spliced in early via `openFrames`, see
+  // `framesForRender`/`nextStepPendingCall`), so an arrow can point from
+  // each argument's value at the call site into its own placeholder row.
+  pendingCallLocals: { frameId: number; paramNames: string[] } | null
 }
 
 // Renders one frame of execution - either the outermost module/global scope
@@ -182,7 +212,7 @@ type FrameProps = {
 // frame's body renders its own Frame recursively, inline, right at its own
 // call site - real DOM in normal flow, so surrounding text/lines reflow
 // automatically.
-function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSources, trace, uptoStep, currentStep, nextStep, monaco, noLocalsLabel, declareTarget }: FrameProps) {
+function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSources, trace, uptoStep, currentStep, nextStep, monaco, noLocalsLabel, declareTarget, pendingCallLocals }: FrameProps) {
   const nodeIndex = nodeIndexByFile.get(path)
   const source = visualSources[path]
   if (!nodeIndex || source === undefined) return null
@@ -216,13 +246,24 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
   // frame's *own* rendered text (already-clipped to clipRange, exactly
   // matching rendered.text's coordinates) - so it can be spliced inline,
   // replacing that text, instead of appended as a separate row below it.
-  const childRanges = children.flatMap((child) => {
+  // A child whose own call hasn't actually started yet (it's merely the
+  // one-step-early preview frame from `nextStepPendingCall`) is the one
+  // exception: its call-site text is still what's about to be evaluated
+  // this very step (each argument individually highlighted above, as the
+  // source of a connector arrow), so it must stay visible rather than be
+  // replaced - its preview box is appended right after instead, via
+  // `pendingChildMarkers`.
+  const childRanges: Array<{ start: number; end: number; frame: OpenFrame }> = []
+  const pendingChildMarkers: Array<{ at: number; frame: OpenFrame }> = []
+  for (const child of children) {
     const anchorNode = child.anchorPath === path ? nodeIndex.get(child.anchorNodeId) : undefined
-    if (!anchorNode) return []
+    if (!anchorNode) continue
     const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, anchorNode)
-    if (!range) return []
-    return [{ start: range.start - clipStart, end: range.end - clipStart, frame: child }]
-  })
+    if (!range) continue
+    const isPending = nextStep?.kind === 'call-enter' && nextStep.frameId === child.frameId
+    if (isPending) pendingChildMarkers.push({ at: range.end - clipStart, frame: child })
+    else childRanges.push({ start: range.start - clipStart, end: range.end - clipStart, frame: child })
+  }
 
   // The AST node the *next* trace step (uptoStep + 1) will touch, if that
   // step belongs to this exact frame - so the learner can see exactly the
@@ -236,6 +277,23 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
   const nextStepFrameId = nextStep == null ? null : nextStep.kind === 'call-enter' ? (nextStep.parentFrameId ?? 0) : nextStep.frameId
   const nextStepRanges = nextStep !== null && nextStepFrameId === frameId && nextStep.path === path
     ? (() => {
+        // A "call-enter" step with known argument sources highlights each
+        // positionally-passed argument expression individually (instead of
+        // the whole call) - one span per argument, carrying that
+        // argument's own AST node id as a key - so a multi-argument call
+        // gets one independently-selectable span per argument for the
+        // connector arrows drawn below (see nextStepPendingCall).
+        if (nextStep.kind === 'call-enter' && nextStep.argSources.length > 0) {
+          const ranges: Array<{ start: number; end: number; key: number }> = []
+          for (const [argNodeId] of nextStep.argSources) {
+            const argNode = nodeIndex.get(argNodeId)
+            if (!argNode) continue
+            const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, argNode, true)
+            if (!range) continue
+            ranges.push({ start: range.start - clipStart, end: range.end - clipStart, key: argNodeId })
+          }
+          return ranges
+        }
         const nextNode = nodeIndex.get(nextStep.nodeId)
         if (!nextNode) return []
         const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, nextNode, true)
@@ -251,6 +309,11 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
   if (declareTarget && declareTarget.frameId === frameId && !localEntries.some(([name]) => name === declareTarget.varName)) {
     localEntries.push([declareTarget.varName, null])
   }
+  if (pendingCallLocals && pendingCallLocals.frameId === frameId) {
+    for (const paramName of pendingCallLocals.paramNames) {
+      if (!localEntries.some(([name]) => name === paramName)) localEntries.push([paramName, null])
+    }
+  }
 
   return (
     <div className={`frame-box${isModule ? ' frame-box--root' : ''}`} data-frame-id={frameId}>
@@ -262,7 +325,7 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
           const isCurrentLine = isFrameActive && currentStep?.line === absoluteLine
           const isExecutedLine = !isCurrentLine && executedLines?.has(absoluteLine) === true
           const lineStateClass = isCurrentLine ? ' visual-current-line' : isExecutedLine ? ' visual-executed-line' : ''
-          const segments = buildLineSegments(line, lineStart, rendered.highlights, rendered.annotationHighlights, childRanges, nextStepRanges)
+          const segments = buildLineSegments(line, lineStart, rendered.highlights, rendered.annotationHighlights, childRanges, nextStepRanges, pendingChildMarkers)
           const content = segments.map((segment, segmentIndex) => segment.kind === 'child' ? (
             <span key={segmentIndex} className="frame-child-zone">
               <Frame
@@ -279,11 +342,12 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
                 monaco={monaco}
                 noLocalsLabel={noLocalsLabel}
                 declareTarget={declareTarget}
+                pendingCallLocals={pendingCallLocals}
               />
             </span>
           ) : segment.kind === 'group' ? (
             <span key={segmentIndex} className={segment.className}>
-              {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className}>{part.text}</span>)}
+              {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className} data-arg-node-id={part.argNodeId}>{part.text}</span>)}
             </span>
           ) : (
             <TextSegment key={segmentIndex} segment={segment} monaco={monaco} />
@@ -581,11 +645,41 @@ function App() {
     return { frameId, varName }
   }, [nextTraceStep, astIndexByFile, visualTraceSteps, currentTraceStep])
 
-  // SVG path (in the coordinate space of .visualizer-canvas) for the arrow
-  // above, measured straight from the rendered DOM once per relevant
-  // change - there's no other reliable way to know where either endpoint
-  // ends up on screen, since both sit inside reflowing, variable-width text.
-  const [connectorPath, setConnectorPath] = useState<string | null>(null)
+  // When the pending next step is a "call-enter" (a user-defined function
+  // about to start running), synthesize that callee frame's OpenFrame
+  // entry one step early so it renders inline at its call site exactly
+  // like any other open frame (see `framesForRender` below, merged into
+  // the `openFrames` map handed down to <Frame>) - since no trace steps
+  // exist yet for that frame id, every locals/substitution/line lookup
+  // keyed off it naturally comes back empty, so it renders "for free" as a
+  // totally fresh, not-yet-started call. Also keeps the raw argSources
+  // list around, used to seed that frame's own parameters as valueless
+  // placeholder rows (`pendingCallLocals`) and as the source of the
+  // call-site -> placeholder connector arrows below.
+  const nextStepPendingCall = useMemo(() => {
+    if (!nextTraceStep || nextTraceStep.kind !== 'call-enter') return null
+    if (nextTraceStep.funcDefNodeId === null || nextTraceStep.funcDefPath === null) return null
+    const openFrame: OpenFrame = {
+      frameId: nextTraceStep.frameId,
+      parentFrameId: nextTraceStep.parentFrameId ?? 0,
+      funcName: nextTraceStep.func,
+      anchorPath: nextTraceStep.path,
+      anchorNodeId: nextTraceStep.nodeId,
+      funcDefPath: nextTraceStep.funcDefPath,
+      funcDefNodeId: nextTraceStep.funcDefNodeId,
+      paramAnnotations: [],
+    }
+    return { openFrame, argSources: nextTraceStep.argSources }
+  }, [nextTraceStep])
+
+  // SVG paths (in the coordinate space of .visualizer-canvas) for the
+  // arrows above, measured straight from the rendered DOM once per
+  // relevant change - there's no other reliable way to know where either
+  // endpoint ends up on screen, since both sit inside reflowing,
+  // variable-width text. Usually at most one path is active at once, but a
+  // function call with several arguments needs one simultaneous arrow per
+  // argument, hence an array rather than a single optional path.
+  const [connectorPaths, setConnectorPaths] = useState<string[]>([])
 
 
   // Keep the open tab in sync with whichever file the trace is currently
@@ -609,7 +703,47 @@ function App() {
     [visualTrace, currentTraceStep],
   )
 
+  // `openFrames` plus, when applicable, the one synthetic "about to open"
+  // callee frame from `nextStepPendingCall` above - this is what actually
+  // gets handed down to <Frame>, so that pending frame renders inline at
+  // its call site one step early, exactly like any other already-open call.
+  const framesForRender = useMemo(() => {
+    if (!nextStepPendingCall) return openFrames
+    const merged = new Map(openFrames)
+    merged.set(nextStepPendingCall.openFrame.frameId, nextStepPendingCall.openFrame)
+    return merged
+  }, [openFrames, nextStepPendingCall])
+
+  const pendingCallLocals = useMemo(() => nextStepPendingCall
+    ? { frameId: nextStepPendingCall.openFrame.frameId, paramNames: nextStepPendingCall.argSources.map(([, paramName]) => paramName) }
+    : null, [nextStepPendingCall])
+
   useLayoutEffect(() => {
+    const canvas = visualizerCanvasRef.current
+    if (!canvas) { setConnectorPaths([]); return }
+    const canvasRect = canvas.getBoundingClientRect()
+
+    // One bezier path (in the canvas's own coordinate space) between two
+    // already-rendered DOM elements, always exiting the source from
+    // whichever side faces the target and entering the target from
+    // whichever side faces the source - so the curve never has to double
+    // back through either endpoint's own text, regardless of which visual
+    // direction this particular arrow happens to flow in (locals -> code,
+    // code -> locals, or code -> code).
+    const pathBetween = (sourceEl: Element, targetEl: Element) => {
+      const sourceRect = sourceEl.getBoundingClientRect()
+      const targetRect = targetEl.getBoundingClientRect()
+      const y1 = sourceRect.top - canvasRect.top + sourceRect.height / 2
+      const y2 = targetRect.top - canvasRect.top + targetRect.height / 2
+      const dir = targetRect.left + targetRect.right >= sourceRect.left + sourceRect.right ? 1 : -1
+      const x1 = (dir === 1 ? sourceRect.right : sourceRect.left) - canvasRect.left
+      const x2 = (dir === 1 ? targetRect.left : targetRect.right) - canvasRect.left
+      const dx = Math.max(Math.abs(x2 - x1) * 0.5, 40)
+      return `M ${x1} ${y1} C ${x1 + dx * dir} ${y1}, ${x2 - dx * dir} ${y2}, ${x2} ${y2}`
+    }
+
+    const paths: string[] = []
+
     // "nextStepVarSource" means a value already known in the locals panel
     // is about to flow out into the code (arrow: locals -> code);
     // "nextStepDeclareTarget" is the opposite - a value already sitting in
@@ -617,33 +751,31 @@ function App() {
     // locals row (arrow: code -> locals). Only one of the two can ever be
     // set at once, since they key off disjoint AST node types.
     const varAnchor = nextStepVarSource ?? nextStepDeclareTarget
-    if (!varAnchor) { setConnectorPath(null); return }
-    const canvas = visualizerCanvasRef.current
-    if (!canvas) { setConnectorPath(null); return }
-    const varEl = canvas.querySelector(
-      `.frame-box[data-frame-id="${varAnchor.frameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(varAnchor.varName)}"] .locals-value`,
-    )
-    const codeEl = canvas.querySelector('.visual-next-step')
-    if (!varEl || !codeEl) { setConnectorPath(null); return }
-    const sourceEl = nextStepVarSource ? varEl : codeEl
-    const targetEl = nextStepVarSource ? codeEl : varEl
-    const canvasRect = canvas.getBoundingClientRect()
-    const sourceRect = sourceEl.getBoundingClientRect()
-    const targetRect = targetEl.getBoundingClientRect()
-    const y1 = sourceRect.top - canvasRect.top + sourceRect.height / 2
-    const y2 = targetRect.top - canvasRect.top + targetRect.height / 2
-    // Always exit the source from whichever side faces the target, and
-    // enter the target from whichever side faces the source, so the curve
-    // never has to double back through either endpoint's own text -
-    // this works the same whether the arrow flows locals -> code (right
-    // to left, in the "var source" case) or code -> locals (left to
-    // right, in the "declare target" case).
-    const dir = targetRect.left + targetRect.right >= sourceRect.left + sourceRect.right ? 1 : -1
-    const x1 = (dir === 1 ? sourceRect.right : sourceRect.left) - canvasRect.left
-    const x2 = (dir === 1 ? targetRect.left : targetRect.right) - canvasRect.left
-    const dx = Math.max(Math.abs(x2 - x1) * 0.5, 40)
-    setConnectorPath(`M ${x1} ${y1} C ${x1 + dx * dir} ${y1}, ${x2 - dx * dir} ${y2}, ${x2} ${y2}`)
-  }, [nextStepVarSource, nextStepDeclareTarget, currentTraceStep, openFrames])
+    if (varAnchor) {
+      const varEl = canvas.querySelector(
+        `.frame-box[data-frame-id="${varAnchor.frameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(varAnchor.varName)}"] .locals-value`,
+      )
+      const codeEl = canvas.querySelector('.visual-next-step')
+      if (varEl && codeEl) paths.push(pathBetween(nextStepVarSource ? varEl : codeEl, nextStepVarSource ? codeEl : varEl))
+    }
+
+    // One arrow per positionally-passed call argument: from its value at
+    // the call site (identified by its own AST node id, via
+    // data-arg-node-id) straight into its matching parameter's placeholder
+    // row in the about-to-open callee frame.
+    if (nextStepPendingCall) {
+      const calleeFrameId = nextStepPendingCall.openFrame.frameId
+      for (const [argNodeId, paramName] of nextStepPendingCall.argSources) {
+        const argEl = canvas.querySelector(`[data-arg-node-id="${argNodeId}"]`)
+        const paramEl = canvas.querySelector(
+          `.frame-box[data-frame-id="${calleeFrameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(paramName)}"] .locals-value`,
+        )
+        if (argEl && paramEl) paths.push(pathBetween(argEl, paramEl))
+      }
+    }
+
+    setConnectorPaths(paths)
+  }, [nextStepVarSource, nextStepDeclareTarget, nextStepPendingCall, currentTraceStep, openFrames])
 
   // Keeps the currently executing line in view as steps advance, with
   // ordinary DOM scrolling - directly replacing the old Monaco
@@ -729,7 +861,7 @@ function App() {
       <header className="topbar"><div className="brand"><button className="icon-button" aria-label={isSidebarOpen ? t.collapseSidebar : t.expandSidebar} onClick={() => setIsSidebarOpen((open) => !open)}>{isSidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button><div className="brand-mark"><Sparkles size={17} /></div><span>glpython</span><span className="brand-divider">/</span><span className="workspace-name">{t.workspaceName}</span></div><div className="topbar-actions"><details className="project-menu"><summary className="workspace-button"><FolderOpen size={15} /><span>{t.openProject}</span><ChevronDown size={13} /></summary><div className="project-menu-options"><button onClick={() => { void openFolder() }}><FolderOpen size={14} /> {t.openFolder}</button><button onClick={() => zipInputRef.current?.click()}><Upload size={14} /> {t.openProject}</button></div></details><button className="workspace-button" onClick={downloadProject}><Download size={15} /><span>{t.downloadProject}</span></button><input ref={zipInputRef} className="hidden-input" type="file" accept=".zip,application/zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openZip(file); event.target.value = '' }} /><button className={`cloud-status ${account ? 'connected' : ''}`} onClick={handleAuthClick}><Cloud size={16} /><span>{account ? t.microsoftConnected : t.signInWithMicrosoft}</span></button><button className="icon-button" aria-label={isGraphicsOpen ? t.collapseGraphics : t.expandGraphics} onClick={() => setIsGraphicsOpen((open) => !open)}>{isGraphicsOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button><details className="project-menu language-menu" ref={languageMenuRef}><summary className="workspace-button" aria-label={t.language}><Languages size={15} /><span>{localeNames[locale]}</span><ChevronDown size={13} /></summary><div className="project-menu-options">{(Object.keys(localeNames) as Locale[]).map((code) => <button key={code} className={code === locale ? 'active' : ''} onClick={() => selectLocale(code)}>{localeNames[code]}</button>)}</div></details><button className="icon-button" aria-label={t.settings}><Settings2 size={18} /></button><div className="avatar" title={account?.username ?? t.notSignedIn}><UserRound size={16} /></div></div></header>
       <div className="workspace">
         {isSidebarOpen && <aside className="sidebar"><div className="course-heading"><div><span className="eyebrow">{t.courseCategory}</span><h1>{project.name}</h1></div><button className="icon-button small" aria-label={t.renameProject} title={t.renameProject} onClick={renameProject}><Pencil size={16} /></button></div><div className="progress-row"><span>{t.lessonProgress}</span><strong>12%</strong></div><div className="progress-track"><span /></div><nav className="lesson-nav"><div className="nav-section"><span className="nav-label">{t.projectFiles}</span><button className="icon-button small" aria-label={t.addFile} onClick={addFile}><Plus size={16} /></button></div>{Object.values(project.files).map((file) => <div className={`file-item ${activeFile === file.path ? 'active' : ''}`} key={file.path}><button className="file-open-button" onClick={() => openFile(file.path)}><span className={`file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}</span><span>{file.label}</span>{openFiles.includes(file.path) && <span className="open-file-mark" />}</button><span className="file-actions"><button className="file-action" aria-label={t.renameFile(file.path)} onClick={() => renameFile(file.path)}><Pencil size={13} /></button><button className="file-action danger" aria-label={t.deleteFile(file.path)} onClick={() => deleteFile(file.path)}><Trash2 size={13} /></button></span></div>)}</nav><div className="sidebar-bottom"><div className="teacher-note"><GraduationCap size={18} /><div><strong>{t.teacherNoteTitle}</strong><span>{t.teacherNoteBody}</span></div></div><button className="help-link"><SquareTerminal size={16} /> {t.pythonReference}</button></div></aside>}
-        <main className="main-area">{authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}<div className="main-split"><div className="editor-column"><div className="editor-header"><div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong>{!isSaved && <span className="unsaved">{t.unsaved}</span>}</div><div className="editor-actions">{isVisualizing ? <button className="secondary-button" onClick={exitVisualizer}><X size={15} /> {t.exitVisualizer}</button> : <><button className="secondary-button" onClick={() => setOutput(t.readyOutput)}><RotateCcw size={15} /> {t.resetOutput}</button><button className="secondary-button" onClick={saveFile}><Save size={15} /> {t.save}</button><button className="secondary-button" onClick={runVisualize} disabled={isRunning || isVisualizerLoading}><Workflow size={15} /> {isVisualizerLoading ? t.visualizing : t.visualize}</button><button className="run-button" onClick={runCode} disabled={isRunning}><Play size={15} fill="currentColor" /> {isRunning ? t.running : t.runProject}</button></>}</div></div>{isVisualizing && <div className="visualizer-bar"><div className="visualizer-title"><Workflow size={15} /><span>{t.visualizerTitle}</span></div>{visualTraceSteps.length > 0 ? <><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setIsVisualPlaying(false); setVisualStepIndex(Number(event.target.value)) }} /><div className="visualizer-controls"><button className="icon-button small" aria-label={t.visualizerRestart} onClick={visualRestart}><RotateCcw size={15} /></button><button className="icon-button small" aria-label={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button className="icon-button small" aria-label={isVisualPlaying ? t.visualizerPause : t.visualizerPlay} onClick={visualTogglePlay}>{isVisualPlaying ? <Pause size={15} /> : <Play size={15} />}</button><button className="icon-button small" aria-label={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div></> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}</div>}{isVisualizing && (visualTrace?.truncated || visualTrace?.error) && <div className="visualizer-warning"><AlertTriangle size={14} />{visualTrace?.error ? t.visualizerError(visualTrace.error) : t.visualizerTruncated}</div>}<section className="editor-panel"><div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => setActiveFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span><span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); closeFile(path) }}><X size={13} /></span></button> })}</div><div className="editor-wrap">{isVisualizing ? <div className="visualizer-view" ref={visualizerScrollRef}><div className="visualizer-canvas" ref={visualizerCanvasRef}><Frame frameId={0} path={activeFile} scope={{ kind: 'module' }} openFrames={openFrames} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={currentTraceStep?.step ?? -1} currentStep={currentTraceStep} nextStep={nextTraceStep} monaco={monaco} noLocalsLabel={t.visualizerNoLocals} declareTarget={nextStepDeclareTarget} />{connectorPath && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs><path d={connectorPath} markerEnd="url(#visualizer-arrowhead)" /></svg>}</div></div> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={selectedFile.code} onChange={updateCode} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true }} />}</div></section><section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span><span className="runtime-badge"><span className="pulse" /> {t.pyodideRuntime}</span></div><span className="output-hint">{t.runsFile(project.mainFile)}</span></div><pre>{isVisualizing ? (visualTrace?.output.slice(0, currentTraceStep?.stdoutLen ?? 0) || t.noOutput) : output}</pre></section></div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => setIsGraphicsOpen(false)}><PanelRightClose size={15} /></button></div>{(isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics).length > 0 ? <GraphicsWindow commands={isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => setIsGraphicsOpen(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div></main>
+        <main className="main-area">{authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}<div className="main-split"><div className="editor-column"><div className="editor-header"><div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong>{!isSaved && <span className="unsaved">{t.unsaved}</span>}</div><div className="editor-actions">{isVisualizing ? <button className="secondary-button" onClick={exitVisualizer}><X size={15} /> {t.exitVisualizer}</button> : <><button className="secondary-button" onClick={() => setOutput(t.readyOutput)}><RotateCcw size={15} /> {t.resetOutput}</button><button className="secondary-button" onClick={saveFile}><Save size={15} /> {t.save}</button><button className="secondary-button" onClick={runVisualize} disabled={isRunning || isVisualizerLoading}><Workflow size={15} /> {isVisualizerLoading ? t.visualizing : t.visualize}</button><button className="run-button" onClick={runCode} disabled={isRunning}><Play size={15} fill="currentColor" /> {isRunning ? t.running : t.runProject}</button></>}</div></div>{isVisualizing && <div className="visualizer-bar"><div className="visualizer-title"><Workflow size={15} /><span>{t.visualizerTitle}</span></div>{visualTraceSteps.length > 0 ? <><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setIsVisualPlaying(false); setVisualStepIndex(Number(event.target.value)) }} /><div className="visualizer-controls"><button className="icon-button small" aria-label={t.visualizerRestart} onClick={visualRestart}><RotateCcw size={15} /></button><button className="icon-button small" aria-label={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button className="icon-button small" aria-label={isVisualPlaying ? t.visualizerPause : t.visualizerPlay} onClick={visualTogglePlay}>{isVisualPlaying ? <Pause size={15} /> : <Play size={15} />}</button><button className="icon-button small" aria-label={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div></> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}</div>}{isVisualizing && (visualTrace?.truncated || visualTrace?.error) && <div className="visualizer-warning"><AlertTriangle size={14} />{visualTrace?.error ? t.visualizerError(visualTrace.error) : t.visualizerTruncated}</div>}<section className="editor-panel"><div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => setActiveFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span><span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); closeFile(path) }}><X size={13} /></span></button> })}</div><div className="editor-wrap">{isVisualizing ? <div className="visualizer-view" ref={visualizerScrollRef}><div className="visualizer-canvas" ref={visualizerCanvasRef}><Frame frameId={0} path={activeFile} scope={{ kind: 'module' }} openFrames={framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={currentTraceStep?.step ?? -1} currentStep={currentTraceStep} nextStep={nextTraceStep} monaco={monaco} noLocalsLabel={t.visualizerNoLocals} declareTarget={nextStepDeclareTarget} pendingCallLocals={pendingCallLocals} />{connectorPaths.length > 0 && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((d, index) => <path key={index} d={d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}</div></div> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? 'python' : 'markdown'} theme="vs-dark" value={selectedFile.code} onChange={updateCode} options={{ minimap: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true }} />}</div></section><section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span><span className="runtime-badge"><span className="pulse" /> {t.pyodideRuntime}</span></div><span className="output-hint">{t.runsFile(project.mainFile)}</span></div><pre>{isVisualizing ? (visualTrace?.output.slice(0, currentTraceStep?.stdoutLen ?? 0) || t.noOutput) : output}</pre></section></div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => setIsGraphicsOpen(false)}><PanelRightClose size={15} /></button></div>{(isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics).length > 0 ? <GraphicsWindow commands={isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => setIsGraphicsOpen(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div></main>
 
       </div><footer className="statusbar"><span><span className="status-dot" /> {t.statusRuntime}</span><span>{t.autosaveOff}</span><span>{t.footerTagline}</span></footer><div className="devbar"><span>{t.devTools}</span><button onClick={resetLocalProject}><Trash2 size={13} /> {t.clearLocalProject}</button></div>
       {inputRequest !== null && <div className="input-dialog-backdrop" role="presentation" onClick={() => respondToInput(true)}><form className="input-dialog" role="dialog" aria-modal="true" aria-label={t.inputDialogTitle} onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); respondToInput(false) }}><div className="input-dialog-heading"><Terminal size={16} /><span>{t.inputDialogTitle}</span></div><p className="input-dialog-prompt">{inputRequest || t.inputDialogFallbackPrompt}</p><input ref={inputFieldRef} className="input-dialog-field" type="text" value={inputValue} onChange={(event) => setInputValue(event.target.value)} placeholder={t.inputPlaceholder} /><div className="input-dialog-actions"><button type="button" className="secondary-button" onClick={() => respondToInput(true)}>{t.inputCancel}</button><button type="submit" className="run-button">{t.inputSubmit}</button></div></form></div>}

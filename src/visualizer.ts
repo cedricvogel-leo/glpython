@@ -54,6 +54,12 @@ export type TraceStep = {
   funcDefNodeId: number | null
   funcDefPath: string | null
   paramAnnotations: Array<[number, string]>
+  // Only present on "call-enter" steps: one [call-site arg node id, bound
+  // parameter name] pair per plain positional argument - lets the UI draw
+  // an arrow from each argument's value at the call site into that
+  // parameter's placeholder row, shown one step early in the about-to-open
+  // callee frame (see nextStepPendingCall in App.tsx).
+  argSources: Array<[number, string]>
   // Only present on the "eval" step of a Call node that just finished
   // running a user-defined function: the frame id that just closed, so the
   // UI knows this is the step where that frame's box collapses into this
