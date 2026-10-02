@@ -105,56 +105,6 @@ export function indexAstNodes(root: AstFile | undefined): Map<number, AstNode> {
   return index
 }
 
-// Builds a childId -> parent AstNode index for one parsed file, so the
-// renderer can walk upward from a "next step" node (e.g. the inner call in
-// `n * fact(n - 1)`) to find the outermost still-pending expression it sits
-// in (see widenToPendingExpression below).
-export function indexAstParents(root: AstFile | undefined): Map<number, AstNode> {
-  const index = new Map<number, AstNode>()
-  if (!root || 'error' in root) return index
-
-  const visit = (node: AstNode) => {
-    for (const value of Object.values(node.fields)) {
-      if (Array.isArray(value)) {
-        for (const item of value) if (item && typeof item === 'object') { index.set((item as AstNode).id, node); visit(item as AstNode) }
-      } else if (value && typeof value === 'object') {
-        index.set((value as AstNode).id, node)
-        visit(value as AstNode)
-      }
-    }
-  }
-
-  visit(root as AstNode)
-  return index
-}
-
-// Plain-expression AST node types a "next step" node can be nested inside
-// while still being considered part of the very same pending computation -
-// as opposed to statement-level nodes (Return, Assign, If, ...) whose
-// keywords/other clauses aren't part of the expression being evaluated.
-const PENDING_EXPRESSION_PARENT_TYPES = new Set([
-  'BinOp', 'UnaryOp', 'BoolOp', 'Compare', 'Call', 'Attribute', 'Subscript',
-  'IfExp', 'Tuple', 'List', 'Set', 'Dict', 'Starred', 'Slice', 'NamedExpr',
-])
-
-// Walks up from `node` through ancestor expression nodes (e.g. the `fact(2)`
-// call inside `3 * fact(2)`) so the whole still-unresolved expression gets
-// boxed as one unit instead of just the innermost sub-node the trace step
-// literally targets - matching how a learner reads "3 * fact(2)" as a single
-// pending computation, even though evaluating the call is the next concrete
-// action. Stops at the first ancestor that isn't a plain expression node
-// (e.g. the enclosing `return`/`if` statement) or that spans multiple
-// lines.
-export function widenToPendingExpression(node: AstNode, parents: Map<number, AstNode>): AstNode {
-  let current = node
-  for (;;) {
-    const parent = parents.get(current.id)
-    if (!parent || !PENDING_EXPRESSION_PARENT_TYPES.has(parent.type)) return current
-    if (parent.line !== undefined && parent.endLine !== undefined && parent.line !== parent.endLine) return current
-    current = parent
-  }
-}
-
 // Every AST node touched by any step up to and including `uptoStep` (across
 // all files), keyed by path -> nodeId -> the value to substitute its source
 // with. Used to build the "original code with computed values inlined"
