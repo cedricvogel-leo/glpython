@@ -465,7 +465,7 @@ function App() {
   localeRef.current = locale
 
   useEffect(() => {
-    const worker = new Worker('/pyodide-worker.js')
+    const worker = new Worker(`${import.meta.env.BASE_URL}pyodide-worker.js`)
     worker.onmessage = (event: MessageEvent<{ type: string; output?: string; graphics?: TurtleCommand[]; prompt?: string } & Partial<TraceResult>>) => {
       const currentTranslation = translations[localeRef.current]
       if (event.data.type === 'ready') setOutput(currentTranslation.pythonReadyOutput)
