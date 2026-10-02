@@ -43,15 +43,21 @@
 .visualizer-animated .locals-value:not(.locals-value-pending) { animation: visual-value-pop .5s ease; }
 /* The one case where opening a frame-box isn't immediate: a user-defined
    call is always preceded, one step earlier, by its own call-pending step
-   (the "function" word flying from its definition into the highlighted
-   call site - see visual-flight-move below), so the box itself waits out
-   that flight's travel time before it starts appearing, then blows up from
-   small to full size as it fades in, instead of just popping in at once. */
-.visualizer-animated .frame-box:not(.frame-box--root) { animation: visual-frame-grow .3s ease-out .48s backwards; }
+   (its own "function" row, in whichever scope defines it, pointing an
+   arrow at the highlighted call site). Rather than popping in at its final
+   spot, the box itself flies in from that row's position - via the
+   --grow-dx/--grow-dy offset the layout effect stashes on it in App.tsx -
+   while blowing up from small to full size and fading in. Boxes with no
+   such predecessor just blow up in place, since the custom properties
+   default to no offset. */
+.visualizer-animated .frame-box:not(.frame-box--root) { animation: visual-frame-grow .42s ease-out backwards; }
 .visualizer-animated .locals-row { animation: visual-fade-in .22s ease; }
-.visualizer-animated .visualizer-connectors path { animation: visual-fade-in .3s ease; }
+.visualizer-animated .visualizer-connectors path { animation: visual-fade-in .3s ease backwards; }
 @keyframes visual-fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes visual-frame-grow { from { opacity: 0; transform: scale(.4); } to { opacity: 1; transform: scale(1); } }
+@keyframes visual-frame-grow {
+  from { opacity: 0; transform: translate(var(--grow-dx, 0px), var(--grow-dy, 0px)) scale(.4); }
+  to { opacity: 1; transform: translate(0, 0) scale(1); }
+}
 @keyframes visual-value-pop { from { background-color: rgba(255, 196, 92, .55); border-radius: 3px; } to { background-color: transparent; } }
 .visualizer-flights { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
 .visual-flight-value { position: absolute; top: 0; left: 0; offset-rotate: 0deg; transform: translate(-50%, -50%); background: rgba(255, 212, 121, .95); color: #1a1500; padding: 0 5px; border-radius: 3px; font: 12px/18px 'JetBrains Mono', monospace; white-space: nowrap; animation: visual-flight-move .6s ease-out forwards; }
