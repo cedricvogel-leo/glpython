@@ -75,6 +75,17 @@
   from { transform: translate(var(--return-dx, 0px), var(--return-dy, 0px)); }
   to { transform: translate(0, 0); }
 }
+/* A frozen snapshot of a just-closed frame-box (geometry + markup, taken
+   right before it disappears - see `closingBoxes` in App.tsx), absolutely
+   positioned right over where the real box used to sit and simply fading
+   out, so the box visibly dissolves in place while the real return value
+   it contained flies out of it into its destination elsewhere, instead of
+   the box just vanishing instantly. Non-interactive and never reflows
+   anything, since the real box is already gone from normal flow by the
+   time this ghost appears. */
+.visualizer-closing-boxes { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 1; }
+.visual-closing-box-ghost { position: absolute; animation: visual-closing-box-fade .4s ease-in forwards; }
+@keyframes visual-closing-box-fade { from { opacity: 1; } to { opacity: 0; } }
 .visualizer-flights { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
 .visual-flight-value { position: absolute; top: 0; left: 0; offset-rotate: 0deg; transform: translate(-50%, -50%); background: rgba(255, 212, 121, .95); color: #1a1500; padding: 0 5px; border-radius: 3px; font: 12px/18px 'JetBrains Mono', monospace; white-space: nowrap; animation: visual-flight-move .6s ease-out forwards; }
 .visualizer-connectors path.visual-flight-arrow { animation: visual-flight-arrow-fade .6s ease-out forwards; }
