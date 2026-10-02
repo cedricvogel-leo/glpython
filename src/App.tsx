@@ -22,6 +22,7 @@ import './App.css'
 type LineSegment =
   | { kind: 'text'; text: string; className?: string }
   | { kind: 'child'; frame: OpenFrame }
+  | { kind: 'group'; className: string; parts: Array<{ text: string; className?: string }> }
 
 function buildLineSegments(
   line: string,
@@ -39,7 +40,11 @@ function buildLineSegments(
   // dropped here - otherwise it would be re-inserted as leftover text after
   // the child segment already consumed that whole range.
   const insideChild = (start: number, end: number) => childRanges.some((c) => start >= c.start && end <= c.end)
-  const marks: Array<{ start: number; end: number; className?: string; frame?: OpenFrame }> = []
+  // `nextStep` is tracked as its own flag (rather than folded straight into
+  // `className`) so that touching next-step marks can later be detected and
+  // merged into one continuous box instead of leaving every mark to draw
+  // its own outline - see the grouping pass below.
+  const marks: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean }> = []
   for (const h of highlights) {
     if (insideChild(h.start, h.end)) continue
     const start = Math.max(h.start, lineStart)
@@ -81,24 +86,47 @@ function buildLineSegments(
       const mEnd = Math.min(m.end, end)
       if (mStart >= mEnd) continue
       if (m.frame) {
-        if (mStart > cursor) marks.push({ start: cursor, end: mStart, className: 'visual-next-step' })
+        if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true })
         cursor = Math.max(cursor, mEnd)
         continue
       }
-      if (mStart > cursor) marks.push({ start: cursor, end: mStart, className: 'visual-next-step' })
-      m.className = m.className ? `${m.className} visual-next-step` : 'visual-next-step'
+      if (mStart > cursor) marks.push({ start: cursor, end: mStart, nextStep: true })
+      m.nextStep = true
       cursor = Math.max(cursor, mEnd)
     }
-    if (cursor < end) marks.push({ start: cursor, end, className: 'visual-next-step' })
+    if (cursor < end) marks.push({ start: cursor, end, nextStep: true })
   }
   marks.sort((a, b) => a.start - b.start)
 
+  // Touching next-step marks (e.g. an already-substituted "3" directly
+  // followed by the plain "<= 1" that completes "3 <= 1") are merged into a
+  // single group here so they render as one continuous highlighted box
+  // instead of two dashed outlines meeting at a seam. Child-frame marks
+  // never participate - they're their own nested component, not text.
+  const grouped: Array<{ start: number; end: number; className?: string; frame?: OpenFrame; nextStep?: boolean; parts?: Array<{ start: number; end: number; className?: string }> }> = []
+  for (const mark of marks) {
+    const prev = grouped[grouped.length - 1]
+    if (mark.nextStep && !mark.frame && prev && prev.nextStep && !prev.frame && prev.end === mark.start) {
+      if (!prev.parts) prev.parts = [{ start: prev.start, end: prev.end, className: prev.className }]
+      prev.parts.push({ start: mark.start, end: mark.end, className: mark.className })
+      prev.end = mark.end
+      continue
+    }
+    grouped.push({ ...mark })
+  }
+
   const segments: LineSegment[] = []
   let cursor = 0
-  for (const mark of marks) {
+  for (const mark of grouped) {
     if (mark.start > cursor) segments.push({ kind: 'text', text: line.slice(cursor, mark.start) })
-    if (mark.frame) segments.push({ kind: 'child', frame: mark.frame })
-    else segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className: mark.className })
+    if (mark.frame) {
+      segments.push({ kind: 'child', frame: mark.frame })
+    } else if (mark.parts) {
+      segments.push({ kind: 'group', className: 'visual-next-step', parts: mark.parts.map((p) => ({ text: line.slice(p.start, p.end), className: p.className })) })
+    } else {
+      const className = mark.nextStep ? (mark.className ? `${mark.className} visual-next-step` : 'visual-next-step') : mark.className
+      segments.push({ kind: 'text', text: line.slice(mark.start, mark.end), className })
+    }
     cursor = mark.end
   }
   if (cursor < line.length || segments.length === 0) segments.push({ kind: 'text', text: line.slice(cursor) })
@@ -243,6 +271,10 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
                 monaco={monaco}
                 noLocalsLabel={noLocalsLabel}
               />
+            </span>
+          ) : segment.kind === 'group' ? (
+            <span key={segmentIndex} className={segment.className}>
+              {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className}>{part.text}</span>)}
             </span>
           ) : (
             <TextSegment key={segmentIndex} segment={segment} monaco={monaco} />
