@@ -663,6 +663,19 @@ function App() {
     return { frameId: nextTraceStep.lookupFrameId, varName: nextTraceStep.lookupName }
   }, [nextTraceStep])
 
+  // When the pending next step closes a callee frame (its own "eval" step
+  // for the Call node, once the callee has fully returned - see
+  // `closesFrameId` on TraceStep), note which frame is about to collapse
+  // and the value it's collapsing into - so an arrow can be drawn, and
+  // later a flying copy of that value animated, from inside the
+  // about-to-close frame-box out to wherever its call expression sits in
+  // the parent (the box's own position, since it's rendered inline right
+  // there and about to be replaced by this plain value once it closes).
+  const nextStepReturnFlight = useMemo(() => {
+    if (!nextTraceStep || nextTraceStep.closesFrameId === null || nextTraceStep.valueText === null) return null
+    return { frameId: nextTraceStep.closesFrameId, value: nextTraceStep.valueText }
+  }, [nextTraceStep])
+
   // SVG paths (in the coordinate space of .visualizer-canvas) for the
   // arrows above, measured straight from the rendered DOM once per
   // relevant change - there's no other reliable way to know where either
@@ -684,7 +697,7 @@ function App() {
   // the box's still-shrunken, mid-flight geometry. `x1`/`y1` are the
   // connector's source anchor point (canvas-relative), kept around so the
   // box-origin logic can reuse it without re-measuring the DOM.
-  type Connector = { d: string; value: string; kind: 'var' | 'funcLookup' | 'arg'; x1: number; y1: number }
+  type Connector = { d: string; value: string; kind: 'var' | 'funcLookup' | 'arg' | 'return'; x1: number; y1: number }
   const [connectorPaths, setConnectorPaths] = useState<Connector[]>([])
 
   // Short-lived "value flying along the arrow it just consumed" ghosts,
@@ -757,7 +770,7 @@ function App() {
     // deferred per-argument measurement below can re-measure the canvas
     // fresh once the callee frame-box's grow animation has actually
     // finished, instead of reusing a rect captured while it was still mid-flight.
-    const pathBetween = (sourceEl: Element, targetEl: Element, kind: Connector['kind'], rect: DOMRect): Connector => {
+    const pathBetween = (sourceEl: Element, targetEl: Element, kind: Connector['kind'], rect: DOMRect, valueOverride?: string): Connector => {
       const sourceRect = sourceEl.getBoundingClientRect()
       const targetRect = targetEl.getBoundingClientRect()
       const y1 = sourceRect.top - rect.top + sourceRect.height / 2
@@ -769,7 +782,12 @@ function App() {
       // Strip a leading "=" from parameter-annotation sources (e.g. the
       // "=3" shown next to "n" in "def fact(n=3):") so the flying copy
       // reads as a plain value, matching what lands in the locals row.
-      const value = (sourceEl.textContent?.trim() ?? '').replace(/^=/, '')
+      // `valueOverride` lets a caller supply the authoritative text itself
+      // instead (used for the return-flight connector below, since its
+      // source element is a whole "return ..." line rather than a span
+      // containing just the value - and a base-case literal return like
+      // "return 1" has no dedicated value span to read from at all).
+      const value = valueOverride ?? (sourceEl.textContent?.trim() ?? '').replace(/^=/, '')
       return { d: `M ${x1} ${y1} C ${x1 + dx * dir} ${y1}, ${x2 - dx * dir} ${y2}, ${x2} ${y2}`, value, kind, x1, y1 }
     }
 
@@ -802,6 +820,27 @@ function App() {
       )
       const codeEl = canvas.querySelector('.visual-next-step')
       if (funcEl && codeEl) paths.push(pathBetween(funcEl, codeEl, 'funcLookup', canvasRect))
+    }
+
+    // "nextStepReturnFlight": the about-to-close callee frame-box's own
+    // current (return) line flowing out into the box's own header line -
+    // the box renders inline right at its call site, so its own position
+    // is exactly where the plain substituted value will land once it
+    // collapses this step. Can't target `.visual-next-step` here like the
+    // other connectors above: the call expression's own AST range is still
+    // entirely swallowed by this still-open child box (see the
+    // `insideChild` carve-out in `buildLineSegments`), so there's no bare
+    // text span to point at yet. Sourcing from the whole return line
+    // (rather than hunting for a `.visual-substituted-value` span inside
+    // it) and overriding the flown text with this step's own `valueText`
+    // also sidesteps the base-case literal-return edge case, where the
+    // returned value is plain, un-substituted source text with no
+    // dedicated span of its own (e.g. `return 1`).
+    if (nextStepReturnFlight) {
+      const boxEl = canvas.querySelector(`.frame-box[data-frame-id="${nextStepReturnFlight.frameId}"]`)
+      const lineEl = boxEl?.querySelector('.visual-current-line')
+      const headerEl = boxEl?.querySelector(':scope > .frame-code > .frame-line:first-child')
+      if (lineEl && (headerEl ?? boxEl)) paths.push(pathBetween(lineEl, headerEl ?? boxEl!, 'return', canvasRect, nextStepReturnFlight.value))
     }
 
     // One arrow per bound parameter of the about-to-open callee frame:
@@ -923,7 +962,7 @@ function App() {
     prevStepIndexRef.current = clampedStepIndex
 
     setConnectorPaths(paths)
-  }, [nextStepVarSource, nextStepDeclareTarget, nextStepPendingCall, nextStepFuncLookup, currentTraceStep, openFrames, clampedStepIndex])
+  }, [nextStepVarSource, nextStepDeclareTarget, nextStepPendingCall, nextStepFuncLookup, nextStepReturnFlight, currentTraceStep, openFrames, clampedStepIndex])
 
   // Keeps the currently executing line in view as steps advance, with
   // ordinary DOM scrolling - directly replacing the old Monaco
