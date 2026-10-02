@@ -667,7 +667,12 @@ class _GlpythonFunction:
 
 def _eval_call(node, scope, suppress_none_result=False):
   global _glpython_pending_call_node, _glpython_last_call_frame_id
-  func = _glpython_eval(node.func, scope)
+  func_ids = getattr(node, "_glpython_func_ids", None) or []
+  _glpython_suppress_substitution_ids.update(func_ids)
+  try:
+    func = _glpython_eval(node.func, scope)
+  finally:
+    _glpython_suppress_substitution_ids.difference_update(func_ids)
   args = []
   for arg_node in node.args:
     if isinstance(arg_node, ast.Starred):
@@ -1050,6 +1055,23 @@ def _glpython_preprocess(tree, source, counter):
       node._glpython_iter_ids = [
         child_id
         for child in ast.walk(node.iter)
+        if (child_id := getattr(child, "_glpython_id", None)) is not None
+      ]
+    if isinstance(node, ast.Call) and not any(isinstance(d, ast.Call) for d in ast.walk(node.func)):
+      # Every node id inside the callee expression ("print" in
+      # "print(f(4))", or "funcs[0]" in "funcs[0](4)") - resolving a
+      # callable never has a substitution worth showing (it's always a
+      # function/builtin, never a plain value), so recording a step for it
+      # would just be a no-op the learner has to click past (see
+      # _glpython_suppress_substitution_ids). Suppressing it also means the
+      # "next step" preview no longer collapses to that bare callee token;
+      # it stays on the whole call expression until the call is genuinely
+      # next (see _eval_call). Skipped entirely when the callee expression
+      # itself contains a nested call (e.g. "make_adder(5)(3)") so that
+      # inner call's own steps still show normally.
+      node._glpython_func_ids = [
+        child_id
+        for child in ast.walk(node.func)
         if (child_id := getattr(child, "_glpython_id", None)) is not None
       ]
 
