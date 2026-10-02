@@ -10,6 +10,9 @@ export type Translation = {
   openProject: string
   openFolder: string
   downloadProject: string
+  shareProject: string
+  shareLinkCopiedOutput: string
+  shareLinkPromptLabel: string
   microsoftConnected: string
   signInWithMicrosoft: string
   settings: string
@@ -98,6 +101,9 @@ export const translations: Record<Locale, Translation> = {
     openProject: 'Open project',
     openFolder: 'Open folder',
     downloadProject: 'Download project',
+    shareProject: 'Share project',
+    shareLinkCopiedOutput: 'Share link copied to the clipboard. Anyone who opens it gets a copy of this project.',
+    shareLinkPromptLabel: 'Copy this share link:',
     microsoftConnected: 'Microsoft connected',
     signInWithMicrosoft: 'Sign in with Microsoft',
     settings: 'Settings',
@@ -184,6 +190,9 @@ export const translations: Record<Locale, Translation> = {
     openProject: 'Projekt öffnen',
     openFolder: 'Ordner öffnen',
     downloadProject: 'Projekt herunterladen',
+    shareProject: 'Projekt teilen',
+    shareLinkCopiedOutput: 'Freigabelink in die Zwischenablage kopiert. Wer ihn öffnet, erhält eine Kopie dieses Projekts.',
+    shareLinkPromptLabel: 'Diesen Freigabelink kopieren:',
     microsoftConnected: 'Mit Microsoft verbunden',
     signInWithMicrosoft: 'Mit Microsoft anmelden',
     settings: 'Einstellungen',
