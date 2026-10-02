@@ -8,7 +8,7 @@
 // stable id embedded in the AST-as-JSON tree - so the UI can substitute that
 // node's original source with the step's computed value inline.
 
-export type TraceStepKind = 'eval' | 'exec' | 'branch' | 'loop-iter' | 'call-enter'
+export type TraceStepKind = 'eval' | 'exec' | 'branch' | 'loop-iter' | 'call-enter' | 'call-pending'
 
 export type TraceStep = {
   step: number
@@ -70,6 +70,15 @@ export type TraceStep = {
   // UI knows this is the step where that frame's box collapses into this
   // step's own substituted return value.
   closesFrameId: number | null
+  // Only present on "call-pending" steps (the moment right before a
+  // user-defined call enters, once the callee and every argument are
+  // already resolved - e.g. the call site now reads "fact(2)" - but its
+  // frame hasn't opened yet): the name being called, and which frame's
+  // locals panel holds it (0 for a module-level function, this step's own
+  // `frameId` for one looked up in the current call's own locals) - lets
+  // the UI draw an arrow from that name's row into the highlighted call.
+  lookupName: string | null
+  lookupFrameId: number | null
 }
 
 export type AstNode = {

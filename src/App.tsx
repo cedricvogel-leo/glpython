@@ -646,6 +646,23 @@ function App() {
     return { openFrame, argSources: nextTraceStep.argSources }
   }, [nextTraceStep])
 
+  // When the pending next step is a "call-pending" (a user-defined call
+  // whose callee and arguments are already resolved - the call site reads
+  // e.g. "fact(2)" - but whose frame hasn't opened yet, see
+  // "call-pending"/`lookupName` on TraceStep), note which frame and name
+  // the callee itself is bound under - so an arrow can be drawn from that
+  // name's own row in the locals panel (showing "function", see
+  // `_glpython_describe_for_locals_panel`) into the highlighted call
+  // expression, representing the upcoming function lookup. Deliberately
+  // distinct from `nextStepPendingCall` above: that one still only fires
+  // for the step *after* this one (its own `call-enter` step), so the
+  // callee's frame box correctly stays closed for the one extra step this
+  // adds.
+  const nextStepFuncLookup = useMemo(() => {
+    if (!nextTraceStep || nextTraceStep.kind !== 'call-pending' || nextTraceStep.lookupName === null || nextTraceStep.lookupFrameId === null) return null
+    return { frameId: nextTraceStep.lookupFrameId, varName: nextTraceStep.lookupName }
+  }, [nextTraceStep])
+
   // SVG paths (in the coordinate space of .visualizer-canvas) for the
   // arrows above, measured straight from the rendered DOM once per
   // relevant change - there's no other reliable way to know where either
@@ -754,6 +771,20 @@ function App() {
       if (varEl && codeEl) paths.push(pathBetween(nextStepVarSource ? varEl : codeEl, nextStepVarSource ? codeEl : varEl))
     }
 
+    // "nextStepFuncLookup": the about-to-be-called function's own row in
+    // whichever frame defines it (showing "function") flowing into the
+    // fully-substituted call expression itself (e.g. "fact(2)") - the same
+    // locals -> code direction as `nextStepVarSource` above, just keyed off
+    // a different step kind, so it's always disjoint from both `varAnchor`
+    // cases and can safely add its own path alongside them.
+    if (nextStepFuncLookup) {
+      const funcEl = canvas.querySelector(
+        `.frame-box[data-frame-id="${nextStepFuncLookup.frameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(nextStepFuncLookup.varName)}"] .locals-value`,
+      )
+      const codeEl = canvas.querySelector('.visual-next-step')
+      if (funcEl && codeEl) paths.push(pathBetween(funcEl, codeEl))
+    }
+
     // One arrow per bound parameter of the about-to-open callee frame:
     // from that parameter's own annotation in the callee's own header
     // (e.g. the "3" in "def fact(n=3):", identified by its AST node id via
@@ -793,7 +824,7 @@ function App() {
     prevStepIndexRef.current = clampedStepIndex
 
     setConnectorPaths(paths)
-  }, [nextStepVarSource, nextStepDeclareTarget, nextStepPendingCall, currentTraceStep, openFrames, clampedStepIndex])
+  }, [nextStepVarSource, nextStepDeclareTarget, nextStepPendingCall, nextStepFuncLookup, currentTraceStep, openFrames, clampedStepIndex])
 
   // Keeps the currently executing line in view as steps advance, with
   // ordinary DOM scrolling - directly replacing the old Monaco

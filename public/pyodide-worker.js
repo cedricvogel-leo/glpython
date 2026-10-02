@@ -343,6 +343,61 @@ def _glpython_record(node, kind, label, value_text=None, func_name="<module>", e
     # a user-defined function - tells the UI which frame's box just closed
     # and should collapse to this step's substituted return value.
     "closesFrameId": closes_frame_id,
+    "lookupName": None,
+    "lookupFrameId": None,
+  }
+  _glpython_trace_log.append(entry)
+  _glpython_step_count += 1
+
+def _glpython_record_call_pending(call_node, name, scope):
+  # Recorded right before a user-defined function call actually enters -
+  # once its own function value *and* every argument have already been
+  # resolved/substituted (so the call site reads e.g. "fact(2)", not
+  # "fact(n - 1)"), but before the callee's own frame box appears. Lets the
+  # UI show that fully-substituted call highlighted as plain text first,
+  # with an arrow from name's own row in whichever frame defines it
+  # (lookupFrameId) into the call - representing "looking up the
+  # function" - before the next step opens its frame (see
+  # nextStepPendingCall in App.tsx, which still keys off the *following*
+  # "call-enter" step and so naturally only kicks in one step later now).
+  global _glpython_step_count
+  if _glpython_step_count >= _GLPYTHON_MAX_STEPS:
+    raise _GlpythonTraceLimit()
+  line, end_line, col, end_col = _glpython_pos(call_node)
+  if line is None:
+    return
+  # This interpreter's simplified scope chain (see _GlpythonScope above)
+  # only ever has at most two levels for any given name: the current
+  # function's own vars, or the module scope - so resolving which frame
+  # "owns" name never needs a real walk, just this one check.
+  lookup_frame_id = _glpython_frame_stack[-1] if (scope.kind == "function" and name in scope.vars) else 0
+  entry = {
+    "step": _glpython_step_count,
+    "path": _glpython_current_path,
+    "func": "<module>",
+    "line": line,
+    "endLine": end_line if end_line is not None else line,
+    "col": col if col is not None else 0,
+    "endCol": end_col if end_col is not None else 0,
+    "kind": "call-pending",
+    "label": f"call {name}(...)",
+    "nodeId": getattr(call_node, "_glpython_id", None),
+    "valueText": None,
+    "locals": {},
+    "stdoutLen": _glpython_stdout_len,
+    "graphicsLen": len(_glpython_graphics_commands) if _glpython_graphics_commands is not None else 0,
+    "resetNodeIds": [],
+    "annotateNodeId": None,
+    "annotateText": None,
+    "frameId": _glpython_frame_stack[-1],
+    "parentFrameId": None,
+    "funcDefNodeId": None,
+    "funcDefPath": None,
+    "paramAnnotations": [],
+    "argSources": [],
+    "closesFrameId": None,
+    "lookupName": name,
+    "lookupFrameId": lookup_frame_id,
   }
   _glpython_trace_log.append(entry)
   _glpython_step_count += 1
@@ -388,6 +443,8 @@ def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_f
     # params.
     "argSources": arg_sources or [],
     "closesFrameId": None,
+    "lookupName": None,
+    "lookupFrameId": None,
   }
   _glpython_trace_log.append(entry)
   _glpython_step_count += 1
@@ -714,6 +771,13 @@ def _eval_call(node, scope, suppress_none_result=False):
       kwargs.update(_glpython_eval(kw.value, scope))
     else:
       kwargs[kw.arg] = _glpython_eval(kw.value, scope)
+  # Only recorded for a plain "name(...)" call into a user-defined function
+  # (the only case that goes on to open a callee frame box, and the only
+  # case where "which row does this name live in" is answerable at all -
+  # an arbitrary callable expression like "funcs[0]()" has no single
+  # locals-panel row to point an arrow at).
+  if isinstance(func, _GlpythonFunction) and isinstance(node.func, ast.Name):
+    _glpython_record_call_pending(node, node.func.id, scope)
   _glpython_pending_call_node = node
   _glpython_last_call_frame_id = None
   value = func(*args, **kwargs)
