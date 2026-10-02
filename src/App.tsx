@@ -240,7 +240,7 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
   for (const child of children) {
     const anchorNode = child.anchorPath === path ? nodeIndex.get(child.anchorNodeId) : undefined
     if (!anchorNode) continue
-    const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, anchorNode)
+    const range = locateNodeRenderedRange(lineOffsets, nodeIndex, substitutions, annotations, anchorNode)
     if (!range) continue
     childRanges.push({ start: range.start - clipStart, end: range.end - clipStart, frame: child })
   }
@@ -259,7 +259,7 @@ function Frame({ frameId, path, scope, openFrames, nodeIndexByFile, visualSource
     ? (() => {
         const nextNode = nodeIndex.get(nextStep.nodeId)
         if (!nextNode) return []
-        const range = locateNodeRenderedRange(source, lineOffsets, nodeIndex, substitutions, annotations, nextNode, true)
+        const range = locateNodeRenderedRange(lineOffsets, nodeIndex, substitutions, annotations, nextNode, true)
         if (!range) return []
         return [{ start: range.start - clipStart, end: range.end - clipStart }]
       })()

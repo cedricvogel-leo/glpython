@@ -394,7 +394,6 @@ type MergedInsert = { start: number; end: number; value: string; kind: 'substitu
 // rendered text" and "find where some other node's span ends up in that
 // rendered text" can walk the exact same splice plan.
 function buildMergedInserts(
-  source: string,
   lineOffsets: number[],
   nodeIndex: Map<number, AstNode>,
   substitutions: Map<number, string> | undefined,
@@ -470,7 +469,6 @@ function locateOffset(merged: MergedInsert[], offset: number): number {
 // text sits within its *parent* frame's already-substituted rendering, in
 // order to render the nested box inline there instead of the plain text.
 export function locateNodeRenderedRange(
-  source: string,
   lineOffsets: number[],
   nodeIndex: Map<number, AstNode>,
   substitutions: Map<number, string> | undefined,
@@ -480,7 +478,7 @@ export function locateNodeRenderedRange(
 ): { start: number; end: number } | null {
   const range = useHeadOnly ? nodeHeadRange(node, lineOffsets) : nodeRange(node, lineOffsets)
   if (!range) return null
-  const merged = buildMergedInserts(source, lineOffsets, nodeIndex, substitutions, annotations)
+  const merged = buildMergedInserts(lineOffsets, nodeIndex, substitutions, annotations)
   return { start: locateOffset(merged, range.start), end: locateOffset(merged, range.end) }
 }
 
@@ -495,7 +493,7 @@ export function applySubstitutions(
     return { text: source, highlights: [], annotationHighlights: [] }
   }
 
-  const merged = buildMergedInserts(source, lineOffsets, nodeIndex, substitutions, annotations)
+  const merged = buildMergedInserts(lineOffsets, nodeIndex, substitutions, annotations)
 
   let text = ''
   let cursor = 0
