@@ -55,8 +55,8 @@
 .visualizer-animated .visualizer-connectors path { animation: visual-fade-in .3s ease backwards; }
 @keyframes visual-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes visual-frame-grow {
-  from { opacity: 0; transform: translate(var(--grow-dx, 0px), var(--grow-dy, 0px)) scale(.4); }
-  to { opacity: 1; transform: translate(0, 0) scale(1); }
+  from { transform: translate(var(--grow-dx, 0px), var(--grow-dy, 0px)) scale(.4); }
+  to { transform: translate(0, 0) scale(1); }
 }
 @keyframes visual-value-pop { from { background-color: rgba(255, 196, 92, .55); border-radius: 3px; } to { background-color: transparent; } }
 .visualizer-flights { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
