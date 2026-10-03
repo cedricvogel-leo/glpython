@@ -1,5 +1,5 @@
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string'
-import type { Project, ProjectFile } from './project'
+import type { Project, ProjectFile } from 'glpython-editor'
 
 // URL query parameter used to carry a whole project (name, main file, and
 // every file's path/label/kind/code), the same idea as webTigerPython's

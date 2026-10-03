@@ -1,5 +1,5 @@
 import JSZip from 'jszip'
-import type { Project, ProjectFile, ProjectFileKind } from './project'
+import type { Project, ProjectFile, ProjectFileKind } from 'glpython-editor'
 
 const storageKey = 'glpython-project'
 
