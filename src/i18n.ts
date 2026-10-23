@@ -85,6 +85,8 @@ export type Translation = {
   visualizerNoSteps: string
   visualizerTruncated: string
   visualizerCollapsedCalls: (count: number, call: string | null) => string
+  replInputLabel: string
+  replDefinitionHint: string
   visualizerRestart: string
   visualizerPrevStep: string
   visualizerNextStep: string
@@ -177,6 +179,8 @@ export const translations: Record<Locale, Translation> = {
     visualizerNoSteps: 'No steps recorded. Run a program with at least one statement first.',
     visualizerTruncated: 'Trace stopped after too many steps (likely an infinite loop). Showing what ran so far.',
     visualizerCollapsedCalls: (count, call) => `… ${count} more calls${call ? ` of ${call}` : ''} …`,
+    replInputLabel: 'Python input',
+    replDefinitionHint: 'Definitions belong in the file.',
     visualizerRestart: 'Restart',
     visualizerPrevStep: 'Previous step',
     visualizerNextStep: 'Next step',
@@ -267,6 +271,8 @@ export const translations: Record<Locale, Translation> = {
     visualizerNoSteps: 'Keine Schritte aufgezeichnet. Führe zuerst ein Programm mit mindestens einer Anweisung aus.',
     visualizerTruncated: 'Die Aufzeichnung wurde nach zu vielen Schritten gestoppt (wahrscheinlich eine Endlosschleife). Es wird gezeigt, was bisher ausgeführt wurde.',
     visualizerCollapsedCalls: (count, call) => `… ${count} weitere Aufrufe${call ? ` von ${call}` : ''} …`,
+    replInputLabel: 'Python-Eingabe',
+    replDefinitionHint: 'Definitionen gehören in die Datei.',
     visualizerRestart: 'Neu starten',
     visualizerPrevStep: 'Vorheriger Schritt',
     visualizerNextStep: 'Nächster Schritt',
