@@ -87,6 +87,10 @@ export type Translation = {
   visualizerCollapsedCalls: (count: number, call: string | null) => string
   replInputLabel: string
   replDefinitionHint: string
+  visualizerModeLabel: string
+  visualizerModeBox: string
+  visualizerModeSubstitution: string
+  visualizerBoxHint: string
   visualizerRestart: string
   visualizerPrevStep: string
   visualizerNextStep: string
@@ -181,6 +185,10 @@ export const translations: Record<Locale, Translation> = {
     visualizerCollapsedCalls: (count, call) => `… ${count} more calls${call ? ` of ${call}` : ''} …`,
     replInputLabel: 'Python input',
     replDefinitionHint: 'Definitions belong in the file.',
+    visualizerModeLabel: 'Display',
+    visualizerModeBox: 'Box',
+    visualizerModeSubstitution: 'Substitution',
+    visualizerBoxHint: 'The box shows which return is executed.',
     visualizerRestart: 'Restart',
     visualizerPrevStep: 'Previous step',
     visualizerNextStep: 'Next step',
@@ -273,6 +281,10 @@ export const translations: Record<Locale, Translation> = {
     visualizerCollapsedCalls: (count, call) => `… ${count} weitere Aufrufe${call ? ` von ${call}` : ''} …`,
     replInputLabel: 'Python-Eingabe',
     replDefinitionHint: 'Definitionen gehören in die Datei.',
+    visualizerModeLabel: 'Darstellung',
+    visualizerModeBox: 'Kasten',
+    visualizerModeSubstitution: 'Ersetzung',
+    visualizerBoxHint: 'Der Kasten zeigt, welches return ausgeführt wird.',
     visualizerRestart: 'Neu starten',
     visualizerPrevStep: 'Vorheriger Schritt',
     visualizerNextStep: 'Nächster Schritt',
