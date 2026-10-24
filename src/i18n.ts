@@ -91,6 +91,12 @@ export type Translation = {
   visualizerModeBox: string
   visualizerModeSubstitution: string
   visualizerBoxHint: string
+  copyChain: string
+  copyChainDone: string
+  copyChainFailed: string
+  copyChainComments: string
+  chainConditionComment: (condition: string, value: string) => string
+  chainLocalsComment: string
   visualizerRestart: string
   visualizerPrevStep: string
   visualizerNextStep: string
@@ -189,6 +195,12 @@ export const translations: Record<Locale, Translation> = {
     visualizerModeBox: 'Box',
     visualizerModeSubstitution: 'Substitution',
     visualizerBoxHint: 'The box shows which return is executed.',
+    copyChain: 'Copy → chain',
+    copyChainDone: 'Copied',
+    copyChainFailed: 'Could not copy',
+    copyChainComments: 'Comments',
+    chainConditionComment: (condition, value) => `${condition} is ${value}`,
+    chainLocalsComment: 'body with local variables',
     visualizerRestart: 'Restart',
     visualizerPrevStep: 'Previous step',
     visualizerNextStep: 'Next step',
@@ -285,6 +297,12 @@ export const translations: Record<Locale, Translation> = {
     visualizerModeBox: 'Kasten',
     visualizerModeSubstitution: 'Ersetzung',
     visualizerBoxHint: 'Der Kasten zeigt, welches return ausgeführt wird.',
+    copyChain: '→-Kette kopieren',
+    copyChainDone: 'Kopiert',
+    copyChainFailed: 'Kopieren nicht möglich',
+    copyChainComments: 'Kommentare',
+    chainConditionComment: (condition, value) => `${condition} ist ${value}`,
+    chainLocalsComment: 'Rumpf mit lokalen Variablen',
     visualizerRestart: 'Neu starten',
     visualizerPrevStep: 'Vorheriger Schritt',
     visualizerNextStep: 'Nächster Schritt',
