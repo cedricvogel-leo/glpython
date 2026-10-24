@@ -1,11 +1,15 @@
-export type Locale = 'en' | 'de'
+import { coreStrings, resolveUiLocale, type CoreStrings, type UiLocale } from 'glpython-editor'
+
+export type Locale = UiLocale
 
 export const localeNames: Record<Locale, string> = {
   en: 'English',
   de: 'Deutsch',
 }
 
-export type Translation = {
+// The IDE's own shell strings; everything the workspace shows comes from
+// glpython-editor's coreStrings (see translations below).
+type ShellStrings = {
   workspaceName: string
   openProject: string
   openFolder: string
@@ -19,8 +23,6 @@ export type Translation = {
   notSignedIn: string
   collapseSidebar: string
   expandSidebar: string
-  collapseGraphics: string
-  expandGraphics: string
   courseCategory: string
   courseMenu: string
   renameProject: string
@@ -34,29 +36,14 @@ export type Translation = {
   teacherNoteBody: string
   pythonReference: string
   unsaved: string
-  resetOutput: string
   save: string
-  runProject: string
-  running: string
-  closeFile: (path: string) => string
-  output: string
-  pyodideRuntime: string
-  runsFile: (mainFile: string) => string
-  turtleGraphics: string
-  gturtleWindow: string
-  graphicsEmptyBefore: string
-  graphicsEmptyAfter: string
-  graphicsCollapsedLabel: string
   statusRuntime: string
   autosaveOff: string
   footerTagline: string
   devTools: string
   clearLocalProject: string
   language: string
-  readyOutput: string
   pythonReadyOutput: string
-  noOutput: string
-  runningOutput: (mainFile: string) => string
   savedOutput: (path: string) => string
   downloadedOutput: (name: string) => string
   openedFolderOutput: (name: string) => string
@@ -71,39 +58,14 @@ export type Translation = {
   promptRenameFile: string
   confirmDeleteFile: (path: string) => string
   confirmClearProject: string
-  inputDialogTitle: string
-  inputDialogFallbackPrompt: string
-  inputPlaceholder: string
-  inputSubmit: string
-  inputCancel: string
-  visualize: string
-  visualizing: string
-  exitVisualizer: string
-  visualizerTitle: string
-  visualizerStepOf: (current: number, total: number) => string
-  visualizerBeforeStart: string
-  visualizerNoSteps: string
-  visualizerTruncated: string
-  visualizerCollapsedCalls: (count: number, call: string | null) => string
-  replInputLabel: string
-  replDefinitionHint: string
-  visualizerModeLabel: string
-  visualizerModeBox: string
-  visualizerModeSubstitution: string
-  visualizerBoxHint: string
-  visualizerRestart: string
-  visualizerPrevStep: string
-  visualizerNextStep: string
-  visualizerPlay: string
-  visualizerPause: string
-  visualizerAnimate: string
   visualizerLocals: string
-  visualizerNoLocals: string
-  visualizerError: (message: string) => string
 }
+
+export type Translation = CoreStrings & ShellStrings
 
 export const translations: Record<Locale, Translation> = {
   en: {
+    ...coreStrings.en,
     workspaceName: 'Classroom workspace',
     openProject: 'Open project',
     openFolder: 'Open folder',
@@ -117,8 +79,6 @@ export const translations: Record<Locale, Translation> = {
     notSignedIn: 'Not signed in',
     collapseSidebar: 'Collapse files sidebar',
     expandSidebar: 'Expand files sidebar',
-    collapseGraphics: 'Collapse graphics window',
-    expandGraphics: 'Expand graphics window',
     courseCategory: 'PROJECT NAME',
     courseMenu: 'Course menu',
     renameProject: 'Rename project',
@@ -132,29 +92,14 @@ export const translations: Record<Locale, Translation> = {
     teacherNoteBody: 'Start by changing the name.',
     pythonReference: 'Python reference',
     unsaved: 'Unsaved',
-    resetOutput: 'Reset output',
     save: 'Save',
-    runProject: 'Run project',
-    running: 'Running...',
-    closeFile: (path) => `Close ${path}`,
-    output: 'Output',
-    pyodideRuntime: 'Pyodide runtime',
-    runsFile: (mainFile) => `Runs ${mainFile}`,
-    turtleGraphics: 'Turtle graphics',
-    gturtleWindow: 'gturtle window',
-    graphicsEmptyBefore: 'Run a project that imports',
-    graphicsEmptyAfter: 'to see its drawing here.',
-    graphicsCollapsedLabel: 'Graphics',
     statusRuntime: 'Python 3.12 in browser',
     autosaveOff: 'Autosave is off',
     footerTagline: 'glpython preview · built for learning',
     devTools: 'Development tools',
     clearLocalProject: 'Clear local project',
     language: 'Language',
-    readyOutput: 'Ready when you are. Run your code to see what it does.',
     pythonReadyOutput: 'Python is ready. Run your code to see what it does.',
-    noOutput: '(No output)',
-    runningOutput: (mainFile) => `Running ${mainFile} and its project files...`,
     savedOutput: (path) => `Saved ${path} to your workspace. OneDrive sync is ready to connect.`,
     downloadedOutput: (name) => `Downloaded ${name} as a ZIP project folder.`,
     openedFolderOutput: (name) => `Opened ${name} from a local folder.`,
@@ -169,37 +114,10 @@ export const translations: Record<Locale, Translation> = {
     promptRenameFile: 'Rename file',
     confirmDeleteFile: (path) => `Delete ${path}?`,
     confirmClearProject: 'Clear the saved local project and reload the starter?',
-    inputDialogTitle: 'Program input',
-    inputDialogFallbackPrompt: 'This program is asking for input:',
-    inputPlaceholder: 'Type your answer...',
-    inputSubmit: 'Submit',
-    inputCancel: 'Cancel',
-    visualize: 'Visualize',
-    visualizing: 'Visualizing...',
-    exitVisualizer: 'Exit visualizer',
-    visualizerTitle: 'Execution visualizer',
-    visualizerStepOf: (current, total) => `Step ${current} of ${total}`,
-    visualizerBeforeStart: 'Before execution',
-    visualizerNoSteps: 'No steps recorded. Run a program with at least one statement first.',
-    visualizerTruncated: 'Trace stopped after too many steps (likely an infinite loop). Showing what ran so far.',
-    visualizerCollapsedCalls: (count, call) => `… ${count} more calls${call ? ` of ${call}` : ''} …`,
-    replInputLabel: 'Python input',
-    replDefinitionHint: 'Definitions belong in the file.',
-    visualizerModeLabel: 'Display',
-    visualizerModeBox: 'Box',
-    visualizerModeSubstitution: 'Substitution',
-    visualizerBoxHint: 'The box shows which return is executed.',
-    visualizerRestart: 'Restart',
-    visualizerPrevStep: 'Previous step',
-    visualizerNextStep: 'Next step',
-    visualizerPlay: 'Play',
-    visualizerPause: 'Pause',
-    visualizerAnimate: 'Animate steps',
     visualizerLocals: 'Variables',
-    visualizerNoLocals: 'No variables yet.',
-    visualizerError: (message) => `Visualizer error: ${message}`,
   },
   de: {
+    ...coreStrings.de,
     workspaceName: 'Klassenarbeitsbereich',
     openProject: 'Projekt öffnen',
     openFolder: 'Ordner öffnen',
@@ -213,8 +131,6 @@ export const translations: Record<Locale, Translation> = {
     notSignedIn: 'Nicht angemeldet',
     collapseSidebar: 'Dateileiste einklappen',
     expandSidebar: 'Dateileiste ausklappen',
-    collapseGraphics: 'Grafikfenster einklappen',
-    expandGraphics: 'Grafikfenster ausklappen',
     courseCategory: 'PROJEKTNAME',
     courseMenu: 'Kursmenü',
     renameProject: 'Projekt umbenennen',
@@ -228,29 +144,14 @@ export const translations: Record<Locale, Translation> = {
     teacherNoteBody: 'Beginne damit, den Namen zu ändern.',
     pythonReference: 'Python-Referenz',
     unsaved: 'Nicht gespeichert',
-    resetOutput: 'Ausgabe zurücksetzen',
     save: 'Speichern',
-    runProject: 'Projekt ausführen',
-    running: 'Wird ausgeführt...',
-    closeFile: (path) => `${path} schließen`,
-    output: 'Ausgabe',
-    pyodideRuntime: 'Pyodide-Laufzeit',
-    runsFile: (mainFile) => `Führt ${mainFile} aus`,
-    turtleGraphics: 'Turtle-Grafik',
-    gturtleWindow: 'gturtle-Fenster',
-    graphicsEmptyBefore: 'Führe ein Projekt aus, das',
-    graphicsEmptyAfter: 'importiert, um die Zeichnung hier zu sehen.',
-    graphicsCollapsedLabel: 'Grafik',
     statusRuntime: 'Python 3.12 im Browser',
     autosaveOff: 'Automatisches Speichern ist deaktiviert',
     footerTagline: 'glpython-Vorschau · zum Lernen entwickelt',
     devTools: 'Entwicklerwerkzeuge',
     clearLocalProject: 'Lokales Projekt löschen',
     language: 'Sprache',
-    readyOutput: 'Bereit, wenn du es bist. Führe deinen Code aus, um zu sehen, was er tut.',
     pythonReadyOutput: 'Python ist bereit. Führe deinen Code aus, um zu sehen, was er tut.',
-    noOutput: '(Keine Ausgabe)',
-    runningOutput: (mainFile) => `${mainFile} und die Projektdateien werden ausgeführt...`,
     savedOutput: (path) => `${path} in deinem Arbeitsbereich gespeichert. OneDrive-Synchronisierung ist bereit zur Verbindung.`,
     downloadedOutput: (name) => `${name} als ZIP-Projektordner heruntergeladen.`,
     openedFolderOutput: (name) => `${name} aus einem lokalen Ordner geöffnet.`,
@@ -265,47 +166,19 @@ export const translations: Record<Locale, Translation> = {
     promptRenameFile: 'Datei umbenennen',
     confirmDeleteFile: (path) => `${path} löschen?`,
     confirmClearProject: 'Das gespeicherte lokale Projekt löschen und den Startercode neu laden?',
-    inputDialogTitle: 'Programmeingabe',
-    inputDialogFallbackPrompt: 'Dieses Programm bittet um eine Eingabe:',
-    inputPlaceholder: 'Antwort eingeben...',
-    inputSubmit: 'Bestätigen',
-    inputCancel: 'Abbrechen',
-    visualize: 'Visualisieren',
-    visualizing: 'Visualisierung läuft...',
-    exitVisualizer: 'Visualisierung beenden',
-    visualizerTitle: 'Ausführungs-Visualisierung',
-    visualizerStepOf: (current, total) => `Schritt ${current} von ${total}`,
-    visualizerBeforeStart: 'Vor der Ausführung',
-    visualizerNoSteps: 'Keine Schritte aufgezeichnet. Führe zuerst ein Programm mit mindestens einer Anweisung aus.',
-    visualizerTruncated: 'Die Aufzeichnung wurde nach zu vielen Schritten gestoppt (wahrscheinlich eine Endlosschleife). Es wird gezeigt, was bisher ausgeführt wurde.',
-    visualizerCollapsedCalls: (count, call) => `… ${count} weitere Aufrufe${call ? ` von ${call}` : ''} …`,
-    replInputLabel: 'Python-Eingabe',
-    replDefinitionHint: 'Definitionen gehören in die Datei.',
-    visualizerModeLabel: 'Darstellung',
-    visualizerModeBox: 'Kasten',
-    visualizerModeSubstitution: 'Ersetzung',
-    visualizerBoxHint: 'Der Kasten zeigt, welches return ausgeführt wird.',
-    visualizerRestart: 'Neu starten',
-    visualizerPrevStep: 'Vorheriger Schritt',
-    visualizerNextStep: 'Nächster Schritt',
-    visualizerPlay: 'Abspielen',
-    visualizerPause: 'Pause',
-    visualizerAnimate: 'Schritte animieren',
     visualizerLocals: 'Variablen',
-    visualizerNoLocals: 'Noch keine Variablen.',
-    visualizerError: (message) => `Fehler in der Visualisierung: ${message}`,
   },
 }
 
 const storageKey = 'glpython-locale'
 
+// The learner's explicit choice in the language menu, else the browser's
+// language, else English (see resolveUiLocale). Only an explicit choice is
+// stored, so a learner who never picked one keeps following the browser.
 export function detectLocale(): Locale {
   const stored = localStorage.getItem(storageKey)
   if (stored === 'en' || stored === 'de') return stored
-
-  const browserLanguages = navigator.languages?.length ? navigator.languages : [navigator.language]
-  const prefersGerman = browserLanguages.some((language) => language?.toLowerCase().startsWith('de'))
-  return prefersGerman ? 'de' : 'en'
+  return resolveUiLocale(navigator.language)
 }
 
 export function saveLocale(locale: Locale): void {

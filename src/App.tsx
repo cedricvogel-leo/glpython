@@ -45,15 +45,12 @@ function App() {
   }, [project])
 
   useEffect(() => {
-    saveLocale(locale)
-  }, [locale])
-
-  useEffect(() => {
     initializeAuth().then(setAccount).catch(() => setAuthErrorKey('init'))
   }, [])
 
   const selectLocale = (nextLocale: Locale) => {
     setLocale(nextLocale)
+    saveLocale(nextLocale)
     if (languageMenuRef.current) languageMenuRef.current.open = false
   }
 
