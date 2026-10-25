@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-The glpython IDE: a browser Python IDE for the classroom, deployed to GitHub Pages at `/glpython/`. It is only the **shell**: header, file sidebar, language menu, Microsoft sign-in (MSAL redirect flow) and project persistence (local storage, folder/ZIP import, ZIP export, share links). Everything inside the workspace is the `<GlPythonWorkspace>` component from **glpython-editor** (`../glpython-editor`): the Monaco editor, the Pyodide worker, the REPL, the visualizer, the turtle panel. Changes to those belong there, not here.
+The glpython IDE: a browser Python IDE for the classroom, deployed to GitHub Pages at the organization's root, https://glpython-edu.github.io/. The repo is `glpython-edu/glpython-edu.github.io` (that name is what makes it the root site); its local clone is `../glpython`. It is only the **shell**: header, file sidebar, language menu, Microsoft sign-in (MSAL redirect flow) and project persistence (local storage, folder/ZIP import, ZIP export, share links). Everything inside the workspace is the `<GlPythonWorkspace>` component from **glpython-editor** (`../glpython-editor`): the Monaco editor, the Pyodide worker, the REPL, the visualizer, the turtle panel. Changes to those belong there, not here.
 
 Sibling repos: `../glpython-editor` (the component, runtime and LiaScript embed; read its CLAUDE.md) and `../glpython-liascript` (the LiaScript macro).
 
@@ -12,11 +12,11 @@ Sibling repos: `../glpython-editor` (the component, runtime and LiaScript embed;
 
 ```bash
 npm run dev     # vite with COOP/COEP headers (input() needs SharedArrayBuffer)
-npm run build   # tsc -b && vite build (base /glpython/)
+npm run build   # tsc -b && vite build (base /)
 npm run lint    # oxlint; 7 known warnings, all in the vendored public/coi-serviceworker.js
 ```
 
-There are no tests. `.github/workflows/ci.yml` runs `npm ci`, the build (tsc catches type changes in a new editor tag) and lint on every pull request. Pushes to `main` deploy to GitHub Pages (`deploy-pages.yml`). To check a change in the browser, use `npm run dev`. `npm run preview` doesn't serve the `/glpython/` base (README «Deployment»).
+There are no tests. `.github/workflows/ci.yml` runs `npm ci`, the build (tsc catches type changes in a new editor tag) and lint on every pull request. Pushes to `main` deploy to GitHub Pages (`deploy-pages.yml`). To check a change in the browser, use `npm run dev`; `npm run build && npm run preview` serves the production layout. The embed is a separate project site under the same origin, https://glpython-edu.github.io/glpython-editor/. The IDE's `coi-serviceworker.js` registers for scope `/`, which includes it, so after a change to that worker check the embed too: its demo page opened directly, and a LiaScript course.
 
 ## Layout
 
