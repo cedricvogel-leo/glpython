@@ -23,6 +23,8 @@ type ShellStrings = {
   closeFiles: string
   projectName: string
   ideTools: string
+  restartPython: string
+  projectMenu: string
   microsoftConnected: string
   signInWithMicrosoft: string
   settings: string
@@ -77,6 +79,8 @@ export const translations: Record<Locale, Translation> = {
     closeFiles: 'Close files',
     projectName: 'Project name',
     ideTools: 'Tools',
+    restartPython: 'Restart Python',
+    projectMenu: 'Project',
     microsoftConnected: 'Microsoft connected',
     signInWithMicrosoft: 'Sign in with Microsoft',
     settings: 'Settings',
@@ -127,6 +131,8 @@ export const translations: Record<Locale, Translation> = {
     closeFiles: 'Dateien schliessen',
     projectName: 'Projektname',
     ideTools: 'Werkzeuge',
+    restartPython: 'Python neu starten',
+    projectMenu: 'Projekt',
     microsoftConnected: 'Mit Microsoft verbunden',
     signInWithMicrosoft: 'Mit Microsoft anmelden',
     settings: 'Einstellungen',

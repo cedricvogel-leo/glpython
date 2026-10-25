@@ -22,10 +22,13 @@ in other contexts beyond this classroom shell.
 The IDE looks like the LiaScript embed, only larger:
 
 - **One bar on top:** the logo, the workspace's own buttons in the embed's
-  order and labels (**▶ Ausführen · Tests · Visualisieren · Zurücksetzen**;
-  ■ Stoppen in place of ▶ while Python is busy), and on the right **Teilen**
-  and **⋮** (open a folder or a ZIP project, download, language, and under
-  development tools: delete the local project, with a confirmation).
+  order and labels (**▶ Ausführen · Tests · Visualisieren**; ■ Stoppen in
+  place of ▶ while Python is busy), and on the right **Teilen** and **⋮**
+  (Python neu starten, open a folder or a ZIP project, download, language, and
+  under development tools: delete the local project, with a confirmation).
+  There is no Zurücksetzen in the bar: ▶ already starts with a fresh namespace
+  and an empty console, ■ stops a hung program, and «Python neu starten» (a new
+  workspace, as the embed's Reset; the code stays) is in ⋮.
 - **Left edge:** **Dateien** (a drawer over the editor: the project name, its
   files, new, rename, delete) and **Python-Referenz**, labelled in their
   tooltips. Every file is also a tab above the editor.

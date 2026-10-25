@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { BookOpen, CircleHelp, Download, EllipsisVertical, FileCode2, Folder, FolderOpen, Link2, Pencil, Plus, Sparkles, Trash2, Upload, X } from 'lucide-react'
+import { BookOpen, CircleHelp, Download, EllipsisVertical, FileCode2, Folder, FolderOpen, Link2, Pencil, Plus, RotateCcw, Sparkles, Trash2, Upload, X } from 'lucide-react'
 import { GlPythonWorkspace, addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from 'glpython-editor'
 import type { ProjectFileKind } from 'glpython-editor'
 import 'glpython-editor/style.css'
@@ -36,8 +36,10 @@ function moveMenuFocus(event: ReactKeyboardEvent<HTMLElement>, menu: HTMLElement
 }
 
 // The IDE is the embed, only larger (P18): one bar on top with the
-// workspace's own buttons (▶ Ausführen · Tests · Visualisieren · Zurücksetzen,
-// put there by the workspace), Teilen and a ⋮ menu for what is rarely needed;
+// workspace's own buttons (▶ Ausführen · Tests · Visualisieren, put there by
+// the workspace), Teilen and a ⋮ menu for what is rarely needed (among it
+// «Python neu starten»: ▶ already starts afresh and ■ stops a hung program,
+// and learners read «Zurücksetzen» as "reset my code");
 // at the left edge the files (a drawer) and the Python reference; below, the
 // workspace in its stacked layout.
 function App() {
@@ -53,6 +55,9 @@ function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
+  // «Python neu starten» mounts the workspace anew: a new Python, an empty
+  // console - as the embed's Reset. The code is the IDE's and stays.
+  const [workspaceGeneration, setWorkspaceGeneration] = useState(0)
   const zipInputRef = useRef<HTMLInputElement | null>(null)
   const drawerRef = useRef<HTMLElement | null>(null)
   const filesButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -194,9 +199,12 @@ function App() {
           <div className="ide-menu">
             <button type="button" ref={menuButtonRef} className="icon-button ide-menu-button" aria-label={t.moreActions} title={t.moreActions} aria-haspopup="menu" aria-expanded={isMenuOpen} onClick={() => setIsMenuOpen((open) => !open)}><EllipsisVertical size={18} /></button>
             {isMenuOpen && <div className="ide-menu-list" role="menu" ref={menuRef} aria-label={t.moreActions} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); closeMenu() } else if (event.key === 'Tab') setIsMenuOpen(false); else moveMenuFocus(event, menuRef.current) }}>
+              <button type="button" role="menuitem" onClick={fromMenu(() => setWorkspaceGeneration((generation) => generation + 1))}><RotateCcw size={15} /> {t.restartPython}</button>
+              <div className="ide-menu-group" role="group" aria-label={t.projectMenu}>
               <button type="button" role="menuitem" onClick={() => { setIsMenuOpen(false); void openFolder() }}><FolderOpen size={15} /> {t.openFolder}</button>
               <button type="button" role="menuitem" onClick={() => { setIsMenuOpen(false); zipInputRef.current?.click() }}><Upload size={15} /> {t.openProject}</button>
               <button type="button" role="menuitem" onClick={fromMenu(() => { void downloadProject() })}><Download size={15} /> {t.downloadProject}</button>
+              </div>
               <div className="ide-menu-group" role="group" aria-label={t.language}>
                 <span className="ide-menu-label" aria-hidden="true">{t.language}</span>
                 {(Object.keys(localeNames) as Locale[]).map((code) => <button type="button" key={code} role="menuitemradio" aria-checked={code === locale} onClick={fromMenu(() => selectLocale(code))}><span className="ide-menu-check" aria-hidden="true" /> {localeNames[code]}</button>)}
@@ -236,6 +244,7 @@ function App() {
         <main className="ide-main">
           {authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}
           <GlPythonWorkspace
+            key={workspaceGeneration}
             project={project}
             activeFile={activeFile}
             openFiles={filePaths}
@@ -245,7 +254,7 @@ function App() {
             isGraphicsOpen={isGraphicsOpen}
             onGraphicsOpenChange={setIsGraphicsOpen}
             actionsContainer={actionsContainer}
-            capabilities={{ breadcrumbs: false, closeFileTabs: false }}
+            capabilities={{ breadcrumbs: false, closeFileTabs: false, resetOutput: false }}
             t={t}
           />
         </main>
