@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-The glpython IDE: a browser Python IDE for the classroom, deployed to GitHub Pages at the organization's root, https://glpython-edu.github.io/. The repo is `glpython-edu/glpython-edu.github.io` (that name is what makes it the root site); its local clone is `../glpython`. It is only the **shell**: header, file sidebar, language menu, Microsoft sign-in (MSAL redirect flow) and project persistence (local storage, folder/ZIP import, ZIP export, share links). Everything inside the workspace is the `<GlPythonWorkspace>` component from **glpython-editor** (`../glpython-editor`): the Monaco editor, the Pyodide worker, the REPL, the visualizer, the turtle panel. Changes to those belong there, not here.
+The glpython IDE: a browser Python IDE for the classroom, deployed to GitHub Pages at the organization's root, https://glpython-edu.github.io/. The repo is `glpython-edu/glpython-edu.github.io` (that name is what makes it the root site); its local clone is `../glpython`. It is only the **shell**: the top bar (with the workspace's buttons portaled in), the files drawer and the ⋮ menu (README «Layout»), Microsoft sign-in (MSAL redirect flow) and project persistence (local storage, folder/ZIP import, ZIP export, share links). Everything inside the workspace is the `<GlPythonWorkspace>` component from **glpython-editor** (`../glpython-editor`): the Monaco editor, the Pyodide worker, the REPL, the visualizer, the turtle panel. Changes to those belong there, not here.
 
 Sibling repos: `../glpython-editor` (the component, runtime and LiaScript embed; read its CLAUDE.md) and `../glpython-liascript` (the LiaScript macro).
 
@@ -20,7 +20,8 @@ There are no tests. `.github/workflows/ci.yml` runs `npm ci`, the build (tsc cat
 
 ## Layout
 
-- `src/App.tsx` — the shell. It renders `GlPythonWorkspace` and uses glpython-editor's project helpers (`addProjectFile`, `renameProjectFile`, …).
+- `src/App.tsx` — the shell. It renders `GlPythonWorkspace` (stacked layout; its buttons go into the bar through `actionsContainer`, every file is a tab with `closeFileTabs: false`) and uses glpython-editor's project helpers (`addProjectFile`, `renameProjectFile`, …).
+- `src/index.css` — the shell's styles (`ide-*` classes), from glpython-editor's `--glp-*` tokens. glpython-editor's `style.css` still has the old shell's rules (`.app-shell`, `.topbar`, `.sidebar`, …), now unused.
 - `src/i18n.ts` — only the shell's own strings (`ShellStrings`, de/en). The workspace's strings come from glpython-editor's `coreStrings`, so don't copy them here. A new workspace string goes into glpython-editor's `src/i18n.ts`.
 - `src/projectStorage.ts` (local storage, folder/ZIP) and `src/projectShare.ts` (`?project=` share links, lz-string, versioned payload).
 - `src/auth.ts` — MSAL. Only active with `VITE_ENTRA_CLIENT_ID` in `.env.local` (README «Microsoft sign-in»).

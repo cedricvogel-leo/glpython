@@ -2,8 +2,8 @@
 
 A browser-based educational Python IDE with Microsoft 365 and OneDrive integration.
 
-This repository is the **shell application**: the classroom chrome (header, file
-sidebar, lesson header, auth, project persistence) that embeds the reusable
+This repository is the **shell application**: the classroom chrome (top bar,
+files drawer, menu, auth, project persistence) that embeds the reusable
 editor/visualizer/graphics core from
 [glpython-editor](https://github.com/glpython-edu/glpython-editor) via the
 `<GlPythonWorkspace>` component. The split exists so the editor, Python
@@ -13,9 +13,26 @@ in other contexts beyond this classroom shell.
 - **glpython-editor** owns: the Monaco-based code editor, the Pyodide Web
   Worker and its `input()`/`gturtle` runtime, the step-by-step execution
   visualizer, and the turtle graphics canvas.
-- **glpython** (this repo) owns: the overall page layout, the file
-  sidebar and lesson metadata, language switching, Microsoft sign-in, and
-  project persistence (local storage, ZIP/folder import-export, URL sharing).
+- **glpython** (this repo) owns: the overall page layout, the files drawer,
+  language switching, Microsoft sign-in, and project persistence (local
+  storage, ZIP/folder import-export, URL sharing).
+
+## Layout
+
+The IDE looks like the LiaScript embed, only larger:
+
+- **One bar on top:** the logo, the workspace's own buttons in the embed's
+  order and labels (**▶ Ausführen · Tests · Visualisieren · Zurücksetzen**;
+  ■ Stoppen in place of ▶ while Python is busy), and on the right **Teilen**
+  and **⋮** (open a folder or a ZIP project, download, language, and under
+  development tools: delete the local project, with a confirmation).
+- **Left edge:** **Dateien** (a drawer over the editor: the project name, its
+  files, new, rename, delete) and **Python-Referenz**, labelled in their
+  tooltips. Every file is also a tab above the editor.
+- **Below:** the workspace in its stacked layout (editor on top, console
+  below, a draggable divider; graphics beside the editor only while a program
+  draws; the visualizer in place of the editor). See glpython-editor's README.
+- The runtime's status shows only while it loads or failed; no footer.
 
 ## Run locally
 
@@ -42,22 +59,23 @@ committing, and run `npm install` again to restore the published dependency.
 
 ## Language
 
-The interface language can be changed from the language menu in the header,
-which shows the currently active language and lists all available options in
-a dropdown. On first load, the language is auto-detected from the browser's
+The interface language can be changed in the ⋮ menu, which marks the active
+language. On first load, the language is auto-detected from the browser's
 language settings and then remembered per browser via local storage.
 
 ## Project persistence
 
 The current project is saved automatically in browser local storage. The
-header supports:
+⋮ menu and the bar support:
 
-- **Open folder** in browsers with the File System Access API
-- **Open ZIP** in all modern browsers with file upload support
-- **Download ZIP** with all project files and `glpython.json` metadata
-- **Share project**, which serializes the entire project structure (files,
-  contents, and metadata) into a compressed URL fragment so a project can be
-  shared or reopened without a server, similar to
+- **Ordner öffnen** in browsers with the File System Access API
+- **Projekt öffnen** (a ZIP) in all modern browsers with file upload support
+- **Projekt herunterladen** as a ZIP with all project files and `glpython.json`
+  metadata
+- **Teilen**, which serializes the entire project structure (files, contents,
+  and metadata) into a compressed link (`?project=`, or `#project=` beyond
+  GitHub Pages' URL limit) so a project can be shared or reopened without a
+  server, similar to
   [webtigerpython.ethz.ch](https://webtigerpython.ethz.ch/)
 
 ZIP projects preserve relative paths, the project name, and the configured

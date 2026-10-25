@@ -14,21 +14,23 @@ type ShellStrings = {
   openProject: string
   openFolder: string
   downloadProject: string
-  shareProject: string
   shareLinkCopiedOutput: string
   shareLinkPromptLabel: string
+  share: string
+  shareCopied: string
+  moreActions: string
+  files: string
+  closeFiles: string
+  projectName: string
+  ideTools: string
   microsoftConnected: string
   signInWithMicrosoft: string
   settings: string
   notSignedIn: string
-  collapseSidebar: string
-  expandSidebar: string
-  courseCategory: string
   courseMenu: string
   renameProject: string
   promptRenameProject: string
   lessonProgress: string
-  projectFiles: string
   addFile: string
   renameFile: (path: string) => string
   deleteFile: (path: string) => string
@@ -37,9 +39,7 @@ type ShellStrings = {
   pythonReference: string
   unsaved: string
   save: string
-  statusRuntime: string
   autosaveOff: string
-  footerTagline: string
   devTools: string
   clearLocalProject: string
   language: string
@@ -68,21 +68,23 @@ export const translations: Record<Locale, Translation> = {
     openProject: 'Open project',
     openFolder: 'Open folder',
     downloadProject: 'Download project',
-    shareProject: 'Share project',
     shareLinkCopiedOutput: 'Share link copied to the clipboard. Anyone who opens it gets a copy of this project.',
     shareLinkPromptLabel: 'Copy this share link:',
+    share: 'Share',
+    shareCopied: 'Link copied ✓',
+    moreActions: 'More actions',
+    files: 'Files',
+    closeFiles: 'Close files',
+    projectName: 'Project name',
+    ideTools: 'Tools',
     microsoftConnected: 'Microsoft connected',
     signInWithMicrosoft: 'Sign in with Microsoft',
     settings: 'Settings',
     notSignedIn: 'Not signed in',
-    collapseSidebar: 'Collapse files sidebar',
-    expandSidebar: 'Expand files sidebar',
-    courseCategory: 'PROJECT NAME',
     courseMenu: 'Course menu',
     renameProject: 'Rename project',
     promptRenameProject: 'Project name',
     lessonProgress: 'Lesson 01 of 08',
-    projectFiles: 'PROJECT FILES',
     addFile: 'Add file',
     renameFile: (path) => `Rename ${path}`,
     deleteFile: (path) => `Delete ${path}`,
@@ -91,9 +93,7 @@ export const translations: Record<Locale, Translation> = {
     pythonReference: 'Python reference',
     unsaved: 'Unsaved',
     save: 'Save',
-    statusRuntime: 'Python 3.12 in browser',
     autosaveOff: 'Autosave is off',
-    footerTagline: 'glpython preview · built for learning',
     devTools: 'Development tools',
     clearLocalProject: 'Clear local project',
     language: 'Language',
@@ -118,21 +118,23 @@ export const translations: Record<Locale, Translation> = {
     openProject: 'Projekt öffnen',
     openFolder: 'Ordner öffnen',
     downloadProject: 'Projekt herunterladen',
-    shareProject: 'Projekt teilen',
     shareLinkCopiedOutput: 'Freigabelink in die Zwischenablage kopiert. Wer ihn öffnet, erhält eine Kopie dieses Projekts.',
     shareLinkPromptLabel: 'Diesen Freigabelink kopieren:',
+    share: 'Teilen',
+    shareCopied: 'Link kopiert ✓',
+    moreActions: 'Weitere Aktionen',
+    files: 'Dateien',
+    closeFiles: 'Dateien schliessen',
+    projectName: 'Projektname',
+    ideTools: 'Werkzeuge',
     microsoftConnected: 'Mit Microsoft verbunden',
     signInWithMicrosoft: 'Mit Microsoft anmelden',
     settings: 'Einstellungen',
     notSignedIn: 'Nicht angemeldet',
-    collapseSidebar: 'Dateileiste einklappen',
-    expandSidebar: 'Dateileiste ausklappen',
-    courseCategory: 'PROJEKTNAME',
     courseMenu: 'Kursmenü',
     renameProject: 'Projekt umbenennen',
     promptRenameProject: 'Projektname',
     lessonProgress: 'Lektion 01 von 08',
-    projectFiles: 'PROJEKTDATEIEN',
     addFile: 'Datei hinzufügen',
     renameFile: (path) => `${path} umbenennen`,
     deleteFile: (path) => `${path} löschen`,
@@ -141,9 +143,7 @@ export const translations: Record<Locale, Translation> = {
     pythonReference: 'Python-Referenz',
     unsaved: 'Nicht gespeichert',
     save: 'Speichern',
-    statusRuntime: 'Python 3.12 im Browser',
     autosaveOff: 'Automatisches Speichern ist deaktiviert',
-    footerTagline: 'glpython-Vorschau · zum Lernen entwickelt',
     devTools: 'Entwicklerwerkzeuge',
     clearLocalProject: 'Lokales Projekt löschen',
     language: 'Sprache',
