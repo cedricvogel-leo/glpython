@@ -5,7 +5,7 @@ A browser-based educational Python IDE with Microsoft 365 and OneDrive integrati
 This repository is the **shell application**: the classroom chrome (header, file
 sidebar, lesson header, auth, project persistence) that embeds the reusable
 editor/visualizer/graphics core from
-[glpython-editor](https://github.com/cedricvogel-leo/glpython-editor) via the
+[glpython-editor](https://github.com/glpython-edu/glpython-editor) via the
 `<GlPythonWorkspace>` component. The split exists so the editor, Python
 execution, execution visualizer, and `gturtle` graphics panel can be embedded
 in other contexts beyond this classroom shell.
