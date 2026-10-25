@@ -7,6 +7,13 @@ import type { Project, ProjectFile } from 'glpython-editor'
 // single source string.
 const SHARE_PARAM = 'project'
 const SCHEMA_VERSION = 1
+// GitHub Pages answers "414 URI Too Long" when a request's path and query
+// exceed 8192 characters - a program of roughly 5,000 to 30,000 characters,
+// depending on how well it compresses. A longer link carries the project in
+// the fragment instead ("#project=..."), which the browser never sends to
+// the server. The glpython LiaScript macro builds its «In IDE öffnen» links
+// the same way.
+const MAX_PATH_AND_QUERY = 8192
 
 type SharedProjectPayload = {
   v: number
@@ -53,20 +60,28 @@ export function decodeProjectFromUrl(encoded: string): Project | null {
 
 export function buildShareUrl(project: Project): string {
   const url = new URL(import.meta.env.BASE_URL, window.location.origin)
-  url.searchParams.set(SHARE_PARAM, encodeProjectForUrl(project))
+  const encoded = encodeProjectForUrl(project)
+  url.searchParams.set(SHARE_PARAM, encoded)
+  if (url.pathname.length + url.search.length <= MAX_PATH_AND_QUERY) return url.toString()
+  url.search = ''
+  url.hash = new URLSearchParams({ [SHARE_PARAM]: encoded }).toString()
   return url.toString()
 }
 
-// Reads a shared project out of the current page URL (if present) and
-// strips the parameter from the address bar afterwards, so reloading or
-// re-sharing doesn't keep re-importing the same snapshot.
+// Reads a shared project out of the current page URL (if present, in the
+// query or, for a long one, the fragment) and strips it from the address bar
+// afterwards, so reloading or re-sharing doesn't keep re-importing the same
+// snapshot.
 export function consumeSharedProjectFromLocation(): Project | null {
   const url = new URL(window.location.href)
-  const encoded = url.searchParams.get(SHARE_PARAM)
+  const fragment = new URLSearchParams(url.hash.slice(1))
+  const encoded = url.searchParams.get(SHARE_PARAM) ?? fragment.get(SHARE_PARAM)
   if (!encoded) return null
 
   const project = decodeProjectFromUrl(encoded)
   url.searchParams.delete(SHARE_PARAM)
+  fragment.delete(SHARE_PARAM)
+  url.hash = fragment.toString()
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
   return project
 }
