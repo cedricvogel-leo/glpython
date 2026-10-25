@@ -73,9 +73,15 @@ function App() {
   }, [])
 
   // The drawer and the menu take keyboard focus when they open; a click
-  // elsewhere closes the menu.
+  // elsewhere closes them (the drawer: anywhere but itself and 📁).
   useEffect(() => {
-    if (isDrawerOpen) drawerRef.current?.querySelector<HTMLElement>('button')?.focus()
+    if (!isDrawerOpen) return
+    drawerRef.current?.querySelector<HTMLElement>('button')?.focus()
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!drawerRef.current?.contains(event.target as Node) && !filesButtonRef.current?.contains(event.target as Node)) setIsDrawerOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick)
   }, [isDrawerOpen])
   useEffect(() => {
     if (!isMenuOpen) return
