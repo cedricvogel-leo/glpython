@@ -43,7 +43,6 @@ type ShellStrings = {
   devTools: string
   clearLocalProject: string
   language: string
-  pythonReadyOutput: string
   savedOutput: (path: string) => string
   downloadedOutput: (name: string) => string
   openedFolderOutput: (name: string) => string
@@ -58,7 +57,6 @@ type ShellStrings = {
   promptRenameFile: string
   confirmDeleteFile: (path: string) => string
   confirmClearProject: string
-  visualizerLocals: string
 }
 
 export type Translation = CoreStrings & ShellStrings
@@ -99,7 +97,6 @@ export const translations: Record<Locale, Translation> = {
     devTools: 'Development tools',
     clearLocalProject: 'Clear local project',
     language: 'Language',
-    pythonReadyOutput: 'Python is ready. Run your code to see what it does.',
     savedOutput: (path) => `Saved ${path} to your workspace. OneDrive sync is ready to connect.`,
     downloadedOutput: (name) => `Downloaded ${name} as a ZIP project folder.`,
     openedFolderOutput: (name) => `Opened ${name} from a local folder.`,
@@ -114,7 +111,6 @@ export const translations: Record<Locale, Translation> = {
     promptRenameFile: 'Rename file',
     confirmDeleteFile: (path) => `Delete ${path}?`,
     confirmClearProject: 'Clear the saved local project and reload the starter?',
-    visualizerLocals: 'Variables',
   },
   de: {
     ...coreStrings.de,
@@ -141,7 +137,7 @@ export const translations: Record<Locale, Translation> = {
     renameFile: (path) => `${path} umbenennen`,
     deleteFile: (path) => `${path} löschen`,
     teacherNoteTitle: 'Hinweis der Lehrkraft',
-    teacherNoteBody: 'Beginne damit, den Namen zu ändern.',
+    teacherNoteBody: 'Zuerst den Namen ändern.',
     pythonReference: 'Python-Referenz',
     unsaved: 'Nicht gespeichert',
     save: 'Speichern',
@@ -151,22 +147,20 @@ export const translations: Record<Locale, Translation> = {
     devTools: 'Entwicklerwerkzeuge',
     clearLocalProject: 'Lokales Projekt löschen',
     language: 'Sprache',
-    pythonReadyOutput: 'Python ist bereit. Führe deinen Code aus, um zu sehen, was er tut.',
-    savedOutput: (path) => `${path} in deinem Arbeitsbereich gespeichert. OneDrive-Synchronisierung ist bereit zur Verbindung.`,
+    savedOutput: (path) => `${path} im Arbeitsbereich gespeichert. OneDrive-Synchronisierung ist bereit zur Verbindung.`,
     downloadedOutput: (name) => `${name} als ZIP-Projektordner heruntergeladen.`,
     openedFolderOutput: (name) => `${name} aus einem lokalen Ordner geöffnet.`,
     folderNotOpened: 'Der Ordner wurde nicht geöffnet.',
     openedZipOutput: (name) => `${name} aus einem ZIP-Projektordner geöffnet.`,
     zipNotOpened: 'Diese ZIP-Datei konnte nicht als Projekt geöffnet werden.',
     authInitError: 'Die Microsoft-Anmeldung konnte nicht initialisiert werden.',
-    authConfigError: 'Füge VITE_ENTRA_CLIENT_ID zu .env.local hinzu, um die Microsoft-Anmeldung zu aktivieren.',
+    authConfigError: 'Für die Microsoft-Anmeldung VITE_ENTRA_CLIENT_ID in .env.local eintragen.',
     authCancelledError: 'Die Microsoft-Anmeldung wurde abgebrochen oder ist fehlgeschlagen.',
     promptFileName: 'Dateiname',
     promptDefaultFileName: 'uebung.py',
     promptRenameFile: 'Datei umbenennen',
     confirmDeleteFile: (path) => `${path} löschen?`,
     confirmClearProject: 'Das gespeicherte lokale Projekt löschen und den Startercode neu laden?',
-    visualizerLocals: 'Variablen',
   },
 }
 
