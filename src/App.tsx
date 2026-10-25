@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { BookOpen, CircleHelp, Download, EllipsisVertical, FileCode2, Folder, FolderOpen, Link2, Pencil, Plus, RotateCcw, Sparkles, Trash2, Upload, X } from 'lucide-react'
 import { GlPythonWorkspace, addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from 'glpython-editor'
-import type { ProjectFileKind } from 'glpython-editor'
+import type { ProjectFileKind, WorkspaceCommand } from 'glpython-editor'
 import 'glpython-editor/style.css'
 import { initializeAuth } from './auth'
 import { clearLocalProject, exportProjectZip, importProjectFolder, importProjectZip, loadLocalProject, saveLocalProject } from './projectStorage'
@@ -55,9 +55,9 @@ function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
-  // «Python neu starten» mounts the workspace anew: a new Python, an empty
-  // console - as the embed's Reset. The code is the IDE's and stays.
-  const [workspaceGeneration, setWorkspaceGeneration] = useState(0)
+  // «Python neu starten»: the workspace's reset command - a new Python and an
+  // empty console, as the embed's Reset; the code is the IDE's and stays.
+  const [workspaceCommand, setWorkspaceCommand] = useState<WorkspaceCommand | null>(null)
   const zipInputRef = useRef<HTMLInputElement | null>(null)
   const drawerRef = useRef<HTMLElement | null>(null)
   const filesButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -199,7 +199,7 @@ function App() {
           <div className="ide-menu">
             <button type="button" ref={menuButtonRef} className="icon-button ide-menu-button" aria-label={t.moreActions} title={t.moreActions} aria-haspopup="menu" aria-expanded={isMenuOpen} onClick={() => setIsMenuOpen((open) => !open)}><EllipsisVertical size={18} /></button>
             {isMenuOpen && <div className="ide-menu-list" role="menu" ref={menuRef} aria-label={t.moreActions} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); closeMenu() } else if (event.key === 'Tab') setIsMenuOpen(false); else moveMenuFocus(event, menuRef.current) }}>
-              <button type="button" role="menuitem" onClick={fromMenu(() => setWorkspaceGeneration((generation) => generation + 1))}><RotateCcw size={15} /> {t.restartPython}</button>
+              <button type="button" role="menuitem" onClick={fromMenu(() => setWorkspaceCommand((current) => ({ id: (current?.id ?? 0) + 1, type: 'reset' })))}><RotateCcw size={15} /> {t.restartPython}</button>
               <div className="ide-menu-group" role="group" aria-label={t.projectMenu}>
               <button type="button" role="menuitem" onClick={() => { setIsMenuOpen(false); void openFolder() }}><FolderOpen size={15} /> {t.openFolder}</button>
               <button type="button" role="menuitem" onClick={() => { setIsMenuOpen(false); zipInputRef.current?.click() }}><Upload size={15} /> {t.openProject}</button>
@@ -244,7 +244,6 @@ function App() {
         <main className="ide-main">
           {authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}
           <GlPythonWorkspace
-            key={workspaceGeneration}
             project={project}
             activeFile={activeFile}
             openFiles={filePaths}
@@ -254,6 +253,7 @@ function App() {
             isGraphicsOpen={isGraphicsOpen}
             onGraphicsOpenChange={setIsGraphicsOpen}
             actionsContainer={actionsContainer}
+            command={workspaceCommand}
             capabilities={{ breadcrumbs: false, closeFileTabs: false, resetOutput: false }}
             t={t}
           />

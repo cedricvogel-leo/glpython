@@ -28,7 +28,7 @@ The IDE looks like the LiaScript embed, only larger:
   under development tools: delete the local project, with a confirmation).
   There is no Zurücksetzen in the bar: ▶ already starts with a fresh namespace
   and an empty console, ■ stops a hung program, and «Python neu starten» (a new
-  workspace, as the embed's Reset; the code stays) is in ⋮.
+  Python and an empty console, as the embed's Reset; the code stays) is in ⋮.
 - **Left edge:** **Dateien** (a drawer over the editor: the project name, its
   files, new, rename, delete) and **Python-Referenz**, labelled in their
   tooltips. Every file is also a tab above the editor.
