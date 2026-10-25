@@ -28,9 +28,9 @@ There are no tests. `.github/workflows/ci.yml` runs `npm ci`, the build (tsc cat
 
 ## glpython-editor dependency
 
-- `package.json` pins `glpython-editor` by tag: `git+https://github.com/cedricvogel-leo/glpython-editor.git#vX.Y.Z`. The editor's `prepare` script builds its `dist/` on install.
+- `package.json` pins `glpython-editor` by tag: `git+https://github.com/glpython-edu/glpython-editor.git#vX.Y.Z`. The editor's `prepare` script builds its `dist/` on install.
 - **Bumping it** (after the tag exists in glpython-editor; see that repo's CLAUDE.md «Releases»):
-  1. On a branch, run `npm install "glpython-editor@git+https://github.com/cedricvogel-leo/glpython-editor.git#vX.Y.Z"`.
+  1. On a branch, run `npm install "glpython-editor@git+https://github.com/glpython-edu/glpython-editor.git#vX.Y.Z"`.
   2. npm rewrites the spec as `github:…`. Restore the `git+https://…` form in `package.json` and `package-lock.json`, so the diff is the tag plus the lock's `resolved` commit.
   3. Run `npm ci && npm run build`, check that `node_modules/glpython-editor/dist` contains the new code, and open a PR titled «Bump glpython-editor to vX.Y.Z».
 - **Trying an unreleased editor change:** build it in `../glpython-editor`, temporarily replace `node_modules/glpython-editor/dist` with its `dist/` (back it up first), run `npm run build`, then restore. Alternatively `npm install ../glpython-editor`, but then restore `package.json`/`package-lock.json` before committing.
