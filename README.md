@@ -99,12 +99,12 @@ the Vite headers.
 
 ## Deployment
 
-This app is published to GitHub Pages at the `/glpython/` sub-path (see the
-`base` option in `vite.config.ts`). Because `vite preview` doesn't serve the
-build under that sub-path by default, locally previewing the exact production
-layout requires serving `dist/` from a path ending in `/glpython/` (for
-example via a symlink into a static file server), rather than running
-`npm run preview` directly at the site root.
+Every push to `main` publishes the app to GitHub Pages at the organization's
+root, <https://glpython-edu.github.io/> (the repo is named
+`glpython-edu.github.io`). `npm run build && npm run preview` serves the same
+layout locally. The embed for LiaScript courses lives next to it, at
+<https://glpython-edu.github.io/glpython-editor/>, deployed from
+glpython-editor.
 
 ## Next integration step
 

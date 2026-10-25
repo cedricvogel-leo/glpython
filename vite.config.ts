@@ -9,10 +9,10 @@ const crossOriginIsolationHeaders = {
 }
 
 // https://vite.dev/config/
-export default defineConfig(({ command }) => ({
-  // GitHub Pages serves this project from /glpython/, so assets and the
-  // Pyodide worker need to be requested under that base path in production.
-  base: command === 'build' ? '/glpython/' : '/',
+// The repo is glpython-edu/glpython-edu.github.io, so GitHub Pages serves the
+// IDE at the organization's root, https://glpython-edu.github.io/, and Vite's
+// default base "/" applies in production too.
+export default defineConfig({
   plugins: [react()],
   // glpython-editor's Pyodide worker is loaded via
   // `new Worker(new URL('./pyodide-worker.js', import.meta.url))`, resolved
@@ -31,4 +31,4 @@ export default defineConfig(({ command }) => ({
   preview: {
     headers: crossOriginIsolationHeaders,
   },
-}))
+})
