@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
-import { BookOpen, ChevronDown, Download, FileCode2, FolderOpen, Languages, Link2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Plus, Sparkles, SquareTerminal, Trash2, Upload } from 'lucide-react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { BookOpen, CircleHelp, Download, EllipsisVertical, FileCode2, Folder, FolderOpen, Link2, Pencil, Plus, RotateCcw, Sparkles, Trash2, Upload, X } from 'lucide-react'
 import { GlPythonWorkspace, addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from 'glpython-editor'
 import type { ProjectFileKind } from 'glpython-editor'
 import 'glpython-editor/style.css'
 import { initializeAuth } from './auth'
-import type { AccountInfo } from '@azure/msal-browser'
 import { clearLocalProject, exportProjectZip, importProjectFolder, importProjectZip, loadLocalProject, saveLocalProject } from './projectStorage'
 import { buildShareUrl, consumeSharedProjectFromLocation } from './projectShare'
 import { detectLocale, localeNames, saveLocale, translations, type Locale } from './i18n'
@@ -24,47 +23,87 @@ const startupProject = (() => {
   return loadLocalProject(initialProject)
 })()
 
+// Moves keyboard focus through a menu's items with the arrow keys, Home and
+// End, as a menu does; Escape is the caller's.
+function moveMenuFocus(event: ReactKeyboardEvent<HTMLElement>, menu: HTMLElement | null) {
+  const items = [...(menu?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [])]
+  if (items.length === 0) return
+  const index = items.indexOf(document.activeElement as HTMLElement)
+  const next = ({ ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: items.length - 1 } as Record<string, number>)[event.key]
+  if (next === undefined) return
+  event.preventDefault()
+  items[(next + items.length) % items.length].focus()
+}
+
+// The IDE is the embed, only larger (P18): one bar on top with the
+// workspace's own buttons (▶ Ausführen · Tests · Visualisieren, put there by
+// the workspace), Teilen and a ⋮ menu for what is rarely needed (among it
+// «Python neu starten»: ▶ already starts afresh and ■ stops a hung program,
+// and learners read «Zurücksetzen» as "reset my code");
+// at the left edge the files (a drawer) and the Python reference; below, the
+// workspace in its stacked layout.
 function App() {
   const [locale, setLocale] = useState<Locale>(() => detectLocale())
   const t = translations[locale]
   const [project, setProject] = useState(() => startupProject)
   const [activeFile, setActiveFile] = useState(() => startupProject.mainFile)
-  const [openFiles, setOpenFiles] = useState(() => [startupProject.mainFile])
-  const [, setAccount] = useState<AccountInfo | null>(null)
   const [authErrorKey, setAuthErrorKey] = useState<'' | 'init' | 'config' | 'cancelled'>('')
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true)
-  // Closed by default; auto-opened by the workspace itself once a project
-  // importing gturtle is actually run, instead of always showing an empty
-  // panel for projects that never draw anything.
+  // The workspace decides itself when to show graphics (only while the
+  // program draws); these props are for hosts with their own toggle.
   const [isGraphicsOpen, setIsGraphicsOpen] = useState(false)
+  const [actionsContainer, setActionsContainer] = useState<HTMLDivElement | null>(null)
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const [shareCopied, setShareCopied] = useState(false)
+  // «Python neu starten» mounts the workspace anew: a new Python, an empty
+  // console - as the embed's Reset. The code is the IDE's and stays.
+  const [workspaceGeneration, setWorkspaceGeneration] = useState(0)
   const zipInputRef = useRef<HTMLInputElement | null>(null)
-  const languageMenuRef = useRef<HTMLDetailsElement | null>(null)
+  const drawerRef = useRef<HTMLElement | null>(null)
+  const filesButtonRef = useRef<HTMLButtonElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     saveLocalProject(project)
   }, [project])
 
   useEffect(() => {
-    initializeAuth().then(setAccount).catch(() => setAuthErrorKey('init'))
+    initializeAuth().catch(() => setAuthErrorKey('init'))
   }, [])
+
+  // The drawer and the menu take keyboard focus when they open; a click
+  // elsewhere closes the menu.
+  useEffect(() => {
+    if (isDrawerOpen) drawerRef.current?.querySelector<HTMLElement>('button')?.focus()
+  }, [isDrawerOpen])
+  useEffect(() => {
+    if (!isMenuOpen) return
+    menuRef.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus()
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node) && !menuButtonRef.current?.contains(event.target as Node)) setIsMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick)
+  }, [isMenuOpen])
+
+  const closeDrawer = () => {
+    setIsDrawerOpen(false)
+    filesButtonRef.current?.focus()
+  }
+  const closeMenu = () => {
+    setIsMenuOpen(false)
+    menuButtonRef.current?.focus()
+  }
+  // A menu item: closes the menu, then acts.
+  const fromMenu = (action: () => void) => () => {
+    setIsMenuOpen(false)
+    action()
+  }
 
   const selectLocale = (nextLocale: Locale) => {
     setLocale(nextLocale)
     saveLocale(nextLocale)
-    if (languageMenuRef.current) languageMenuRef.current.open = false
-  }
-
-  const openFile = (path: string) => {
-    setActiveFile(path)
-    setOpenFiles((currentFiles) => currentFiles.includes(path) ? currentFiles : [...currentFiles, path])
-  }
-
-  const closeFile = (path: string) => {
-    if (openFiles.length === 1) return
-    const closingIndex = openFiles.indexOf(path)
-    const remainingFiles = openFiles.filter((openPath) => openPath !== path)
-    setOpenFiles(remainingFiles)
-    if (path === activeFile) setActiveFile(remainingFiles[Math.max(0, closingIndex - 1)])
   }
 
   const renameProject = () => {
@@ -77,29 +116,23 @@ function App() {
     const requestedPath = window.prompt(t.promptFileName, t.promptDefaultFileName)?.trim()
     if (!requestedPath || project.files[requestedPath]) return
     const kind: ProjectFileKind = requestedPath.endsWith('.py') ? 'python' : 'text'
-    const newFile = { path: requestedPath, label: requestedPath.replace(/\.[^/.]+$/, ''), kind, code: kind === 'python' ? '# Start writing Python here\n' : '' }
+    const newFile = { path: requestedPath, label: requestedPath.replace(/\.[^/.]+$/, ''), kind, code: '' }
     setProject((currentProject) => addProjectFile(currentProject, newFile))
-    openFile(requestedPath)
+    setActiveFile(requestedPath)
   }
 
   const renameFile = (path: string) => {
     const requestedPath = window.prompt(t.promptRenameFile, path)?.trim()
     if (!requestedPath || requestedPath === path || project.files[requestedPath]) return
     setProject((currentProject) => renameProjectFile(currentProject, path, requestedPath))
-    setOpenFiles((currentFiles) => currentFiles.map((openPath) => openPath === path ? requestedPath : openPath))
     if (activeFile === path) setActiveFile(requestedPath)
   }
 
   const deleteFile = (path: string) => {
     if (Object.keys(project.files).length === 1 || !window.confirm(t.confirmDeleteFile(path))) return
     const remainingPaths = Object.keys(project.files).filter((filePath) => filePath !== path)
-    const nextActiveFile = activeFile === path ? remainingPaths[0] : activeFile
     setProject((currentProject) => deleteProjectFile(currentProject, path))
-    setOpenFiles((currentFiles) => {
-      const remainingOpenFiles = currentFiles.filter((openPath) => openPath !== path)
-      return remainingOpenFiles.length ? remainingOpenFiles : [nextActiveFile]
-    })
-    if (activeFile === path) setActiveFile(nextActiveFile)
+    if (activeFile === path) setActiveFile(remainingPaths[0])
   }
 
   const downloadProject = async () => {
@@ -112,10 +145,14 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  // Teilen: the link to a copy of this project, copied with a short
+  // confirmation beside the button, or shown to copy by hand.
   const shareProject = async () => {
     const shareUrl = buildShareUrl(project)
     try {
       await navigator.clipboard.writeText(shareUrl)
+      setShareCopied(true)
+      window.setTimeout(() => setShareCopied(false), 3000)
     } catch {
       window.prompt(t.shareLinkPromptLabel, shareUrl)
     }
@@ -130,7 +167,6 @@ function App() {
       }
       setProject(importedProject)
       setActiveFile(importedProject.mainFile)
-      setOpenFiles([importedProject.mainFile])
     } catch {
       // Folder picker not supported or cancelled - importProjectFolder already
       // falls back to the hidden zip <input> above when appropriate.
@@ -141,7 +177,6 @@ function App() {
     const importedProject = await importProjectZip(file, project)
     setProject(importedProject)
     setActiveFile(importedProject.mainFile)
-    setOpenFiles([importedProject.mainFile])
   }
 
   const resetLocalProject = () => {
@@ -151,29 +186,79 @@ function App() {
   }
 
   const authErrorMessage = authErrorKey === 'init' ? t.authInitError : authErrorKey === 'config' ? t.authConfigError : authErrorKey === 'cancelled' ? t.authCancelledError : ''
+  const filePaths = Object.keys(project.files)
 
   return (
-    <div className="app-shell">
-      <header className="topbar"><div className="brand"><button className="icon-button" aria-label={isSidebarOpen ? t.collapseSidebar : t.expandSidebar} onClick={() => setIsSidebarOpen((open) => !open)}>{isSidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button><div className="brand-mark"><Sparkles size={17} /></div><span>glpython</span></div><div className="topbar-actions"><details className="project-menu"><summary className="workspace-button"><FolderOpen size={15} /><span>{t.openProject}</span><ChevronDown size={13} /></summary><div className="project-menu-options"><button onClick={() => { void openFolder() }}><FolderOpen size={14} /> {t.openFolder}</button><button onClick={() => zipInputRef.current?.click()}><Upload size={14} /> {t.openProject}</button></div></details><button className="workspace-button" onClick={() => { void downloadProject() }}><Download size={15} /><span>{t.downloadProject}</span></button><button className="workspace-button" onClick={() => { void shareProject() }}><Link2 size={15} /><span>{t.shareProject}</span></button><input ref={zipInputRef} className="hidden-input" type="file" accept=".zip,application/zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openZip(file); event.target.value = '' }} /><button className="icon-button" aria-label={isGraphicsOpen ? t.collapseGraphics : t.expandGraphics} onClick={() => setIsGraphicsOpen((open) => !open)}>{isGraphicsOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button><details className="project-menu language-menu" ref={languageMenuRef}><summary className="workspace-button" aria-label={t.language}><Languages size={15} /><span>{localeNames[locale]}</span><ChevronDown size={13} /></summary><div className="project-menu-options">{(Object.keys(localeNames) as Locale[]).map((code) => <button key={code} className={code === locale ? 'active' : ''} onClick={() => selectLocale(code)}>{localeNames[code]}</button>)}</div></details></div></header>
-      <div className="workspace">
-        {isSidebarOpen && <aside className="sidebar"><div className="course-heading"><div><span className="eyebrow">{t.courseCategory}</span><h1>{project.name}</h1></div><button className="icon-button small" aria-label={t.renameProject} title={t.renameProject} onClick={renameProject}><Pencil size={16} /></button></div><nav className="lesson-nav"><div className="nav-section"><span className="nav-label">{t.projectFiles}</span><button className="icon-button small" aria-label={t.addFile} onClick={addFile}><Plus size={16} /></button></div>{Object.values(project.files).map((file) => <div className={`file-item ${activeFile === file.path ? 'active' : ''}`} key={file.path}><button className="file-open-button" onClick={() => openFile(file.path)}><span className={`file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}</span><span>{file.label}</span>{openFiles.includes(file.path) && <span className="open-file-mark" />}</button><span className="file-actions"><button className="file-action" aria-label={t.renameFile(file.path)} onClick={() => renameFile(file.path)}><Pencil size={13} /></button><button className="file-action danger" aria-label={t.deleteFile(file.path)} onClick={() => deleteFile(file.path)}><Trash2 size={13} /></button></span></div>)}</nav><div className="sidebar-bottom"><a className="help-link" href="https://docs.python.org/3/reference/index.html" target="_blank" rel="noreferrer"><SquareTerminal size={16} /> {t.pythonReference}</a></div></aside>}
-        <main className="main-area">
+    <div className="ide">
+      <header className="ide-bar">
+        <div className="ide-brand"><span className="ide-brand-mark" aria-hidden="true"><Sparkles size={16} /></span><span>glpython</span></div>
+        <div className="ide-actions" ref={setActionsContainer} />
+        <div className="ide-bar-end">
+          {shareCopied && <span className="ide-share-status" role="status">{t.shareCopied}</span>}
+          <button type="button" className="secondary-button" onClick={() => { void shareProject() }}><Link2 size={15} /> {t.share}</button>
+          <div className="ide-menu">
+            <button type="button" ref={menuButtonRef} className="icon-button ide-menu-button" aria-label={t.moreActions} title={t.moreActions} aria-haspopup="menu" aria-expanded={isMenuOpen} onClick={() => setIsMenuOpen((open) => !open)}><EllipsisVertical size={18} /></button>
+            {isMenuOpen && <div className="ide-menu-list" role="menu" ref={menuRef} aria-label={t.moreActions} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); closeMenu() } else if (event.key === 'Tab') setIsMenuOpen(false); else moveMenuFocus(event, menuRef.current) }}>
+              <button type="button" role="menuitem" onClick={fromMenu(() => setWorkspaceGeneration((generation) => generation + 1))}><RotateCcw size={15} /> {t.restartPython}</button>
+              <div className="ide-menu-group" role="group" aria-label={t.projectMenu}>
+              <button type="button" role="menuitem" onClick={() => { setIsMenuOpen(false); void openFolder() }}><FolderOpen size={15} /> {t.openFolder}</button>
+              <button type="button" role="menuitem" onClick={() => { setIsMenuOpen(false); zipInputRef.current?.click() }}><Upload size={15} /> {t.openProject}</button>
+              <button type="button" role="menuitem" onClick={fromMenu(() => { void downloadProject() })}><Download size={15} /> {t.downloadProject}</button>
+              </div>
+              <div className="ide-menu-group" role="group" aria-label={t.language}>
+                <span className="ide-menu-label" aria-hidden="true">{t.language}</span>
+                {(Object.keys(localeNames) as Locale[]).map((code) => <button type="button" key={code} role="menuitemradio" aria-checked={code === locale} onClick={fromMenu(() => selectLocale(code))}><span className="ide-menu-check" aria-hidden="true" /> {localeNames[code]}</button>)}
+              </div>
+              <div className="ide-menu-group" role="group" aria-label={t.devTools}>
+                <span className="ide-menu-label" aria-hidden="true">{t.devTools}</span>
+                <button type="button" role="menuitem" className="ide-menu-danger" onClick={fromMenu(resetLocalProject)}><Trash2 size={15} /> {t.clearLocalProject}</button>
+              </div>
+            </div>}
+          </div>
+          <input ref={zipInputRef} className="hidden-input" type="file" accept=".zip,application/zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openZip(file); event.target.value = '' }} />
+        </div>
+      </header>
+      <div className="ide-body">
+        <nav className="ide-rail" aria-label={t.ideTools}>
+          <button type="button" ref={filesButtonRef} className="icon-button" aria-label={t.files} title={t.files} aria-expanded={isDrawerOpen} aria-controls="ide-files" onClick={() => setIsDrawerOpen((open) => !open)}><Folder size={19} /></button>
+          <a className="icon-button" href="https://docs.python.org/3/reference/index.html" target="_blank" rel="noreferrer" aria-label={t.pythonReference} title={t.pythonReference}><CircleHelp size={19} /></a>
+        </nav>
+        {isDrawerOpen && <aside id="ide-files" className="ide-drawer" ref={drawerRef} aria-label={t.files} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); closeDrawer() } }}>
+          <div className="ide-drawer-head">
+            <span className="ide-drawer-title">{t.files}</span>
+            <button type="button" className="icon-button small" aria-label={t.closeFiles} title={t.closeFiles} onClick={closeDrawer}><X size={16} /></button>
+          </div>
+          <div className="ide-project-name">
+            <span className="ide-project-label">{t.projectName}</span>
+            <div className="ide-project-row"><strong>{project.name}</strong><button type="button" className="icon-button small" aria-label={t.renameProject} title={t.renameProject} onClick={renameProject}><Pencil size={15} /></button></div>
+          </div>
+          <ul className="ide-file-list">
+            {filePaths.map((path) => { const file = project.files[path]; return <li key={path} className={path === activeFile ? 'active' : undefined}>
+              <button type="button" className="ide-file-open" aria-current={path === activeFile ? 'true' : undefined} onClick={() => setActiveFile(path)}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}<span>{path}</span></button>
+              <button type="button" className="icon-button small" aria-label={t.renameFile(path)} title={t.renameFile(path)} onClick={() => renameFile(path)}><Pencil size={14} /></button>
+              <button type="button" className="icon-button small ide-file-delete" aria-label={t.deleteFile(path)} title={t.deleteFile(path)} disabled={filePaths.length === 1} onClick={() => deleteFile(path)}><Trash2 size={14} /></button>
+            </li> })}
+          </ul>
+          <button type="button" className="secondary-button ide-new-file" onClick={addFile}><Plus size={15} /> {t.addFile}</button>
+        </aside>}
+        <main className="ide-main">
           {authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}
           <GlPythonWorkspace
+            key={workspaceGeneration}
             project={project}
             activeFile={activeFile}
-            openFiles={openFiles}
-            onOpenFile={openFile}
-            onCloseFile={closeFile}
+            openFiles={filePaths}
+            onOpenFile={setActiveFile}
+            onCloseFile={() => undefined}
             onFileCodeChange={(path, code) => setProject((currentProject) => updateProjectFile(currentProject, path, code))}
             isGraphicsOpen={isGraphicsOpen}
             onGraphicsOpenChange={setIsGraphicsOpen}
+            actionsContainer={actionsContainer}
+            capabilities={{ breadcrumbs: false, closeFileTabs: false, resetOutput: false }}
             t={t}
           />
         </main>
       </div>
-      <footer className="statusbar"><span><span className="status-dot" /> {t.statusRuntime}</span><span>{t.footerTagline}</span></footer>
-      <div className="devbar"><span>{t.devTools}</span><button onClick={resetLocalProject}><Trash2 size={13} /> {t.clearLocalProject}</button></div>
     </div>
   )
 }
