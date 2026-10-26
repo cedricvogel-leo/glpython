@@ -133,3 +133,10 @@ Add an Entra ID application registration, configure MSAL.js with the tenant
 client ID, and connect the save action to Microsoft Graph `drive/items`
 endpoints. SharePoint assignment workflows can then be layered on top of the
 same file model.
+
+## Lizenz / License
+
+MIT – see [LICENSE](LICENSE). The libraries the build bundles (React, Monaco's
+React wrapper, lucide, MSAL, JSZip, lz-string, glpython-editor) and the vendored
+coi-serviceworker are listed with their notices in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
