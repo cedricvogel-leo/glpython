@@ -2,10 +2,11 @@
   "name": "glpython",
   "private": true,
   "version": "0.0.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && cp LICENSE THIRD_PARTY_NOTICES.md dist/",
     "lint": "oxlint",
     "preview": "vite preview"
   },

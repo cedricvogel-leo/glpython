@@ -36,6 +36,10 @@ There are no tests. `.github/workflows/ci.yml` runs `npm ci`, the build (tsc cat
   3. Run `npm ci && npm run build`, check that `node_modules/glpython-editor/dist` contains the new code, and open a PR titled «Bump glpython-editor to vX.Y.Z».
 - **Trying an unreleased editor change:** build it in `../glpython-editor`, temporarily replace `node_modules/glpython-editor/dist` with its `dist/` (back it up first), run `npm run build`, then restore. Alternatively `npm install ../glpython-editor`, but then restore `package.json`/`package-lock.json` before committing.
 
+## Licence
+
+MIT (`LICENSE`). `THIRD_PARTY_NOTICES.md` lists what the build bundles, with license texts; the build strips license comments, so `npm run build` copies `LICENSE` and the notices into `dist/` (the deployed site). When a dependency is added or changed, update it: the bundled packages are the `node_modules` paths in the source maps of `npx vite build --sourcemap`.
+
 ## Conventions
 
 - Work on a branch from `main`, one PR per package of work, CI green before handing over. Merging to `main` deploys the IDE.
