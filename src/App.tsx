@@ -260,7 +260,7 @@ function App() {
             onGraphicsOpenChange={setIsGraphicsOpen}
             actionsContainer={actionsContainer}
             command={workspaceCommand}
-            capabilities={{ breadcrumbs: false, closeFileTabs: false, resetOutput: false }}
+            capabilities={{ breadcrumbs: false, closeFileTabs: false, resetOutput: false, coverage: true }}
             t={t}
           />
         </main>
