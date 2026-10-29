@@ -2,7 +2,8 @@ import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from
 import type { Project, ProjectFile } from 'glpython-editor'
 
 // URL query parameter used to carry a whole project (name, main file, and
-// every file's path/label/kind/code), the same idea as webTigerPython's
+// every file's path/label/kind/code, and readOnly for a file to read only,
+// e.g. a course's library), the same idea as webTigerPython's
 // `?code=` parameter but extended to a full multi-file project instead of a
 // single source string.
 const SHARE_PARAM = 'project'
@@ -26,6 +27,7 @@ function isProjectFile(value: unknown): value is ProjectFile {
   if (!value || typeof value !== 'object') return false
   const file = value as Partial<ProjectFile>
   return typeof file.path === 'string' && typeof file.label === 'string' && typeof file.code === 'string' && (file.kind === 'python' || file.kind === 'text')
+    && (file.readOnly === undefined || typeof file.readOnly === 'boolean')
 }
 
 function isSharedProjectPayload(value: unknown): value is SharedProjectPayload {

@@ -81,8 +81,14 @@ The current project is saved automatically in browser local storage. The
   server, similar to
   [webtigerpython.ethz.ch](https://webtigerpython.ethz.ch/)
 
-ZIP projects preserve relative paths, the project name, and the configured
-Python entry point. This local format is also the shape planned for OneDrive
+ZIP projects preserve relative paths, the project name, the configured
+Python entry point, and which files are read-only (`readOnly` in
+`glpython.json`).
+
+A **read-only file** (`readOnly: true` on the file, e.g. in a share link from
+a course, as the LiaScript macro builds for its libraries) is shown with a
+lock: it can be read, run and imported, but not edited, renamed or deleted -
+e.g. a parser that learners use as a black box. This local format is also the shape planned for OneDrive
 folder synchronization.
 
 ## Microsoft sign-in

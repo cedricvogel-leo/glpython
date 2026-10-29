@@ -39,6 +39,8 @@ button { font: inherit; }
 .ide-file-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 0; color: var(--glp-text); background: none; text-align: left; font: 14px var(--glp-font-code); cursor: pointer; }
 .ide-file-open span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ide-file-delete:not(:disabled):hover { color: var(--glp-error); }
+/* In place of rename/delete for a read-only file (e.g. a course's library). */
+.ide-file-read-only { display: inline-grid; place-items: center; padding: 6px; color: var(--glp-text-muted); }
 .ide-new-file { align-self: flex-start; }
 .ide-main { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 16px; }
 
