@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { BookOpen, CircleHelp, Download, EllipsisVertical, FileCode2, Folder, FolderOpen, Link2, Pencil, Plus, RotateCcw, Sparkles, Trash2, Upload, X } from 'lucide-react'
+import { BookOpen, CircleHelp, Download, EllipsisVertical, FileCode2, Folder, FolderOpen, Link2, Lock, Pencil, Plus, RotateCcw, Sparkles, Trash2, Upload, X } from 'lucide-react'
 import { GlPythonWorkspace, addProjectFile, deleteProjectFile, initialProject, renameProjectFile, updateProjectFile } from 'glpython-editor'
 import type { ProjectFileKind, WorkspaceCommand } from 'glpython-editor'
 import 'glpython-editor/style.css'
@@ -241,8 +241,11 @@ function App() {
           <ul className="ide-file-list">
             {filePaths.map((path) => { const file = project.files[path]; return <li key={path} className={path === activeFile ? 'active' : undefined}>
               <button type="button" className="ide-file-open" aria-current={path === activeFile ? 'true' : undefined} onClick={() => setActiveFile(path)}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}<span>{path}</span></button>
+              {/* A read-only file (e.g. a course's library) can't be renamed or deleted either. */}
+              {file.readOnly ? <span className="ide-file-read-only" role="img" aria-label={t.readOnlyFile} title={t.readOnlyFile}><Lock size={14} /></span> : <>
               <button type="button" className="icon-button small" aria-label={t.renameFile(path)} title={t.renameFile(path)} onClick={() => renameFile(path)}><Pencil size={14} /></button>
               <button type="button" className="icon-button small ide-file-delete" aria-label={t.deleteFile(path)} title={t.deleteFile(path)} disabled={filePaths.length === 1} onClick={() => deleteFile(path)}><Trash2 size={14} /></button>
+              </>}
             </li> })}
           </ul>
           <button type="button" className="secondary-button ide-new-file" onClick={addFile}><Plus size={15} /> {t.addFile}</button>

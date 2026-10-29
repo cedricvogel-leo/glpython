@@ -7,6 +7,14 @@ type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>
 }
 
+type ProjectMetadata = { name?: string; mainFile?: string; readOnly?: string[] }
+
+// The files glpython.json lists as read-only, marked so.
+function withReadOnly(files: Record<string, ProjectFile>, metadata: ProjectMetadata): Record<string, ProjectFile> {
+  const readOnly = Array.isArray(metadata.readOnly) ? metadata.readOnly : []
+  return Object.fromEntries(Object.entries(files).map(([path, file]) => [path, readOnly.includes(path) ? { ...file, readOnly: true } : file]))
+}
+
 export function loadLocalProject(fallback: Project): Project {
   const savedProject = localStorage.getItem(storageKey)
   if (!savedProject) return fallback
@@ -29,7 +37,10 @@ export function clearLocalProject(): void {
 export async function exportProjectZip(project: Project): Promise<Blob> {
   const zip = new JSZip()
   for (const file of Object.values(project.files)) zip.file(file.path, file.code)
-  zip.file('glpython.json', JSON.stringify({ name: project.name, mainFile: project.mainFile }, null, 2))
+  // Which files are read-only (e.g. a course's library) travels in the
+  // metadata, so a ZIP round trip keeps it.
+  const readOnly = Object.values(project.files).filter((file) => file.readOnly).map((file) => file.path)
+  zip.file('glpython.json', JSON.stringify({ name: project.name, mainFile: project.mainFile, ...(readOnly.length > 0 ? { readOnly } : {}) }, null, 2))
   return zip.generateAsync({ type: 'blob' })
 }
 
@@ -37,13 +48,13 @@ export async function importProjectZip(file: File, fallback: Project): Promise<P
   const zip = await JSZip.loadAsync(file)
   const entries = Object.values(zip.files).filter((entry) => !entry.dir && entry.name !== 'glpython.json' && !entry.name.startsWith('__MACOSX/'))
   const metadataEntry = zip.file('glpython.json')
-  const metadata = metadataEntry ? JSON.parse(await metadataEntry.async('text')) as { name?: string; mainFile?: string } : {}
+  const metadata = metadataEntry ? JSON.parse(await metadataEntry.async('text')) as ProjectMetadata : {}
   const files = await Promise.all(entries.map(async (entry) => {
     const path = entry.name.replace(/^\/+/, '')
     const code = await entry.async('text')
     return [path, createProjectFile(path, code)] as const
   }))
-  const importedFiles = Object.fromEntries(files)
+  const importedFiles = withReadOnly(Object.fromEntries(files), metadata)
   const pythonFiles = Object.values(importedFiles).filter((entry) => entry.kind === 'python')
   const mainFile = metadata.mainFile && importedFiles[metadata.mainFile]
     ? metadata.mainFile
@@ -59,9 +70,9 @@ export async function importProjectFolder(fallback: Project): Promise<Project | 
   const directory = await pickerWindow.showDirectoryPicker()
   const files: ProjectFile[] = []
   await readDirectory(directory, '', files)
-  const importedFiles = Object.fromEntries(files.map((file) => [file.path, file]))
-  const pythonFiles = files.filter((file) => file.kind === 'python')
   const metadata = await readProjectMetadata(directory)
+  const importedFiles = withReadOnly(Object.fromEntries(files.map((file) => [file.path, file])), metadata)
+  const pythonFiles = files.filter((file) => file.kind === 'python')
   const mainFile = metadata.mainFile && importedFiles[metadata.mainFile]
     ? metadata.mainFile
     : importedFiles['main.py']
@@ -70,11 +81,11 @@ export async function importProjectFolder(fallback: Project): Promise<Project | 
   return { ...fallback, name: metadata.name || directory.name, mainFile, files: importedFiles }
 }
 
-async function readProjectMetadata(directory: FileSystemDirectoryHandle): Promise<{ name?: string; mainFile?: string }> {
+async function readProjectMetadata(directory: FileSystemDirectoryHandle): Promise<ProjectMetadata> {
   try {
     const metadataHandle = await directory.getFileHandle('glpython.json')
     const metadataFile = await metadataHandle.getFile()
-    return JSON.parse(await metadataFile.text()) as { name?: string; mainFile?: string }
+    return JSON.parse(await metadataFile.text()) as ProjectMetadata
   } catch {
     return {}
   }
