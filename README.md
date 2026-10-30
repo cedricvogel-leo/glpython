@@ -68,8 +68,33 @@ language settings and then remembered per browser via local storage.
 
 ## Project persistence
 
-The current project is saved automatically in browser local storage. The
-⋮ menu and the bar support:
+**Each browser tab has its own project** (as in WebTigerPython), saved
+automatically in the browser:
+
+- Opening a share link starts a new tab project; it never replaces the work in
+  another tab. The address bar then shows only the start page, so there is no
+  link to copy from it - links come from **Teilen**.
+- A reload keeps the tab's project, and so does iPad Safari rebuilding a
+  background tab. The tab's id is kept in its session storage and its history
+  entry (`history.state`), never in the address.
+- **Closing or reloading** a tab whose project changed since the last
+  **Teilen** or **Projekt herunterladen** brings the browser's own question
+  (desktop browsers; iPad Safari never asks).
+- A closed tab's project is kept for 14 days: ⋮ **Zuletzt geschlossen** lists
+  them («Öffnen» in this tab if it holds only the untouched starter, else in a
+  new tab; «Entfernen»). A new tab offers the last one changed within a day
+  right away («Zuletzt bearbeitet: auswerter.py (vor 2 Stunden).» · «Öffnen»),
+  since after quitting Safari or restarting the iPad a tab comes back empty.
+- ⋮ **Neues Projekt** gives the tab the starter; opening a folder or a ZIP
+  gives it that project. The one before goes to «Zuletzt geschlossen».
+- The one project the IDE kept before per-tab projects becomes the first
+  tab's project, once.
+- A tab that stays open notices a newer IDE version (`version.json`, written
+  by the build, checked when the tab comes back into view and every 30
+  minutes): «Neue Version verfügbar.» · «Neu laden». The code survives the
+  reload; Python's session doesn't.
+
+The ⋮ menu and the bar support:
 
 - **Ordner öffnen** in browsers with the File System Access API
 - **Projekt öffnen** (a ZIP) in all modern browsers with file upload support

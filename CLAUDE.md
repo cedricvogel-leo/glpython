@@ -23,7 +23,8 @@ There are no tests. `.github/workflows/ci.yml` runs `npm ci`, the build (tsc cat
 - `src/App.tsx` — the shell. It renders `GlPythonWorkspace` (stacked layout; its buttons go into the bar through `actionsContainer`, every file is a tab with `closeFileTabs: false`) and uses glpython-editor's project helpers (`addProjectFile`, `renameProjectFile`, …).
 - `src/index.css` — the shell's styles (`ide-*` classes), from glpython-editor's `--glp-*` tokens. glpython-editor's `style.css` styles only the workspace (plus `icon-button`, `hidden-input` and `auth-notice`, which the shell uses too).
 - `src/i18n.ts` — only the shell's own strings (`ShellStrings`, de/en). The workspace's strings come from glpython-editor's `coreStrings`, so don't copy them here. A new workspace string goes into glpython-editor's `src/i18n.ts`.
-- `src/projectStorage.ts` (local storage, folder/ZIP) and `src/projectShare.ts` (`?project=` share links, lz-string, versioned payload).
+- `src/tabProjects.ts`: per-tab projects (P25). The tab's id is in sessionStorage and `history.state` (never in the address); projects are in localStorage, one entry per id. Nothing is deleted when a tab goes away: a page can't tell a close from iPad Safari unloading it (only `history.state` survives that). Open tabs answer over a BroadcastChannel, which finds duplicated tabs and the projects for «Zuletzt geschlossen».
+- `src/projectStorage.ts` (folder/ZIP) and `src/projectShare.ts` (`?project=` share links, lz-string, versioned payload).
 - `src/auth.ts` — MSAL. Only active with `VITE_ENTRA_CLIENT_ID` in `.env.local` (README «Microsoft sign-in»).
 - `vite.config.ts` — `optimizeDeps.exclude: ['glpython-editor']` keeps the editor's worker next to its `dist/index.js`. Don't remove it.
 

@@ -1,8 +1,6 @@
 import JSZip from 'jszip'
 import type { Project, ProjectFile, ProjectFileKind } from 'glpython-editor'
 
-const storageKey = 'glpython-project'
-
 type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>
 }
@@ -13,25 +11,6 @@ type ProjectMetadata = { name?: string; mainFile?: string; readOnly?: string[] }
 function withReadOnly(files: Record<string, ProjectFile>, metadata: ProjectMetadata): Record<string, ProjectFile> {
   const readOnly = Array.isArray(metadata.readOnly) ? metadata.readOnly : []
   return Object.fromEntries(Object.entries(files).map(([path, file]) => [path, readOnly.includes(path) ? { ...file, readOnly: true } : file]))
-}
-
-export function loadLocalProject(fallback: Project): Project {
-  const savedProject = localStorage.getItem(storageKey)
-  if (!savedProject) return fallback
-
-  try {
-    return JSON.parse(savedProject) as Project
-  } catch {
-    return fallback
-  }
-}
-
-export function saveLocalProject(project: Project): void {
-  localStorage.setItem(storageKey, JSON.stringify(project))
-}
-
-export function clearLocalProject(): void {
-  localStorage.removeItem(storageKey)
 }
 
 export async function exportProjectZip(project: Project): Promise<Blob> {

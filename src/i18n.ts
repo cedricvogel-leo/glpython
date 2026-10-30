@@ -29,8 +29,18 @@ type ShellStrings = {
   renameFile: (path: string) => string
   deleteFile: (path: string) => string
   pythonReference: string
-  devTools: string
-  clearLocalProject: string
+  newProject: string
+  recentlyClosed: string
+  recentlyClosedHint: string
+  recentlyClosedEmpty: string
+  openClosed: string
+  removeClosed: (file: string) => string
+  showAllClosed: string
+  lastEdited: (file: string, when: string) => string
+  justNow: string
+  dismiss: string
+  updateAvailable: string
+  reloadNow: string
   language: string
   authInitError: string
   authConfigError: string
@@ -39,7 +49,6 @@ type ShellStrings = {
   promptDefaultFileName: string
   promptRenameFile: string
   confirmDeleteFile: (path: string) => string
-  confirmClearProject: string
 }
 
 export type Translation = CoreStrings & ShellStrings
@@ -66,8 +75,18 @@ export const translations: Record<Locale, Translation> = {
     renameFile: (path) => `Rename ${path}`,
     deleteFile: (path) => `Delete ${path}`,
     pythonReference: 'Python reference',
-    devTools: 'Development tools',
-    clearLocalProject: 'Clear local project',
+    newProject: 'New project',
+    recentlyClosed: 'Recently closed',
+    recentlyClosedHint: 'Projects of closed tabs, kept in this browser for 14 days.',
+    recentlyClosedEmpty: 'No projects closed in the last 14 days.',
+    openClosed: 'Open',
+    removeClosed: (file) => `Remove ${file}`,
+    showAllClosed: 'Show all',
+    lastEdited: (file, when) => `Last edited: ${file} (${when}).`,
+    justNow: 'just now',
+    dismiss: 'Close',
+    updateAvailable: 'A new version is available.',
+    reloadNow: 'Reload',
     language: 'Language',
     authInitError: 'Microsoft sign-in could not be initialized.',
     authConfigError: 'Add VITE_ENTRA_CLIENT_ID to .env.local to enable Microsoft sign-in.',
@@ -76,7 +95,6 @@ export const translations: Record<Locale, Translation> = {
     promptDefaultFileName: 'exercise.py',
     promptRenameFile: 'Rename file',
     confirmDeleteFile: (path) => `Delete ${path}?`,
-    confirmClearProject: 'Clear the saved local project and reload the starter?',
   },
   de: {
     ...coreStrings.de,
@@ -99,8 +117,18 @@ export const translations: Record<Locale, Translation> = {
     renameFile: (path) => `${path} umbenennen`,
     deleteFile: (path) => `${path} löschen`,
     pythonReference: 'Python-Referenz',
-    devTools: 'Entwicklerwerkzeuge',
-    clearLocalProject: 'Lokales Projekt löschen',
+    newProject: 'Neues Projekt',
+    recentlyClosed: 'Zuletzt geschlossen',
+    recentlyClosedHint: 'Projekte aus geschlossenen Tabs, 14 Tage lang in diesem Browser gespeichert.',
+    recentlyClosedEmpty: 'Keine geschlossenen Projekte aus den letzten 14 Tagen.',
+    openClosed: 'Öffnen',
+    removeClosed: (file) => `${file} entfernen`,
+    showAllClosed: 'Alle anzeigen',
+    lastEdited: (file, when) => `Zuletzt bearbeitet: ${file} (${when}).`,
+    justNow: 'gerade eben',
+    dismiss: 'Schliessen',
+    updateAvailable: 'Neue Version verfügbar.',
+    reloadNow: 'Neu laden',
     language: 'Sprache',
     authInitError: 'Die Microsoft-Anmeldung konnte nicht initialisiert werden.',
     authConfigError: 'Für die Microsoft-Anmeldung VITE_ENTRA_CLIENT_ID in .env.local eintragen.',
@@ -109,7 +137,6 @@ export const translations: Record<Locale, Translation> = {
     promptDefaultFileName: 'uebung.py',
     promptRenameFile: 'Datei umbenennen',
     confirmDeleteFile: (path) => `${path} löschen?`,
-    confirmClearProject: 'Das gespeicherte lokale Projekt löschen und den Startercode neu laden?',
   },
 }
 
