@@ -55,6 +55,14 @@ button { font: inherit; }
 .ide-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; padding: 6px 6px 6px 12px; color: var(--glp-text); background: var(--glp-info-bg); border-left: 3px solid var(--glp-info); border-radius: var(--glp-radius); font-size: 14px; }
 .ide-notice > span { flex: 1; min-width: 12em; }
 .ide-notice .secondary-button { padding: 5px 10px; font-size: 13px; }
+/* A link that can't be read, a library that couldn't be loaded. */
+.ide-notice--warning { background: var(--glp-warning-bg); border-left-color: var(--glp-warning); }
+/* Libraries by URL in the drawer: name, and where they come from. */
+.ide-libraries { display: flex; flex-direction: column; gap: 4px; }
+.ide-library-name { min-width: 0; display: flex; flex-direction: column; }
+.ide-library-name small { color: var(--glp-text-muted); font: 12px/1.3 var(--glp-font-ui); white-space: normal; }
+.ide-library-name small.ide-library-failed { color: var(--glp-warning); }
+.ide-file-open:disabled { cursor: default; }
 /* «Zuletzt geschlossen». */
 .ide-dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .25); }
 .ide-dialog { width: min(520px, 100%); max-height: 80vh; overflow-y: auto; padding: 16px; background: var(--glp-bg); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); box-shadow: 0 12px 32px rgba(0, 0, 0, .18); }

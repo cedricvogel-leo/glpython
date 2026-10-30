@@ -5,15 +5,20 @@ import type { Project, ProjectFileKind, WorkspaceCommand } from 'glpython-editor
 import 'glpython-editor/style.css'
 import { initializeAuth } from './auth'
 import { exportProjectZip, importProjectFolder, importProjectZip } from './projectStorage'
-import { buildShareUrl, readSharedProjectFromLocation } from './projectShare'
+import { buildShareUrl, readSharedLinkFromLocation } from './projectShare'
+import { fetchLibrary, libraryHost, type LibraryState } from './libraries'
 import { answerTabQueries, claimTabId, newTabEntry, otherLiveTabIds, projectFingerprint, pruneEntries, recentlyClosed, removeEntry, saveEntry, startTab, type TabEntry } from './tabProjects'
 import { detectLocale, localeNames, saveLocale, translations, type Locale } from './i18n'
 
 // This tab's project to start with (see tabProjects.ts): a share link's
-// (`?project=`), else the one this tab held before, else the starter. Runs
-// once at module load, since every useState initializer below needs the
-// same result.
-const startup = startTab(readSharedProjectFromLocation(), initialProject)
+// (`?project=`), else the one this tab held before, else the starter; for a
+// link that can't be read, an empty project and a notice. Runs once at
+// module load, since every useState initializer below needs the same result.
+const EMPTY_PROJECT: Project = { id: 'empty', name: translations[detectLocale()].emptyProjectName, mainFile: 'main.py', files: { 'main.py': { path: 'main.py', label: 'main', kind: 'python', code: '' } } }
+const startup = startTab(readSharedLinkFromLocation(), initialProject, EMPTY_PROJECT)
+// OneNote cuts links at 2,083 characters (Internet Explorer's old limit,
+// which other programs kept too): «Teilen» copies longer ones with a note.
+const LONG_LINK = 2083
 // A fresh tab offers the last project closed within a day: after Safari or
 // the iPad restarted, a tab comes back empty.
 const OFFER_CLOSED_MS = 24 * 60 * 60 * 1000
@@ -73,6 +78,12 @@ function App() {
   const [closedOffer, setClosedOffer] = useState<TabEntry[]>([])
   const [closedList, setClosedList] = useState<TabEntry[] | null>(null)
   const [updateAvailable, setUpdateAvailable] = useState(false)
+  // The project's libraries by URL (libraries.ts); a link that couldn't be
+  // read; the length of a long link just copied.
+  const [libraries, setLibraries] = useState<Record<string, LibraryState>>(() => startup.entry.libraries ?? {})
+  const [brokenLink, setBrokenLink] = useState(startup.broken)
+  const [longLinkLength, setLongLinkLength] = useState<number | null>(null)
+  const fetchingRef = useRef(new Set<string>())
   const [authErrorKey, setAuthErrorKey] = useState<'' | 'init' | 'config' | 'cancelled'>('')
   // The workspace decides itself when to show graphics (only while the
   // program draws); these props are for hosts with their own toggle.
@@ -98,8 +109,26 @@ function App() {
     if (fingerprint !== lastFingerprintRef.current) changedAtRef.current = Date.now()
     lastFingerprintRef.current = fingerprint
     unsavedRef.current = fingerprint !== savedFingerprint
-    saveEntry({ id: tabId, project, savedFingerprint, changedAt: changedAtRef.current })
-  }, [project, savedFingerprint, tabId])
+    saveEntry({ id: tabId, project, savedFingerprint, changedAt: changedAtRef.current, libraries })
+  }, [project, savedFingerprint, tabId, libraries])
+
+  // Libraries still to fetch: once, when the link opened (and again after
+  // «Erneut versuchen»); fetched, a library is a read-only file of the project.
+  useEffect(() => {
+    for (const [path, library] of Object.entries(libraries)) {
+      if (library.status !== 'loading' || fetchingRef.current.has(path)) continue
+      fetchingRef.current.add(path)
+      const forTab = tabIdRef.current
+      void fetchLibrary(library.url, t).then((result) => {
+        fetchingRef.current.delete(path)
+        if (tabIdRef.current !== forTab) return
+        if ('code' in result) setProject((current) => ({ ...current, files: { ...current.files, [path]: { path, label: path.replace(/\.[^/.]+$/, ''), kind: /\.py$/i.test(path) ? 'python' : 'text', code: result.code, readOnly: true } } }))
+        setLibraries((current) => current[path]?.url !== library.url ? current : { ...current, [path]: 'code' in result ? { url: library.url, status: 'loaded' } : { url: library.url, status: 'failed', failure: result.failure } })
+      })
+    }
+  }, [libraries, t])
+  const retryLibrary = (path: string) => setLibraries((current) => current[path] ? { ...current, [path]: { url: current[path].url, status: 'loading' } } : current)
+  const libraryUrls = Object.fromEntries(Object.entries(libraries).map(([path, library]) => [path, library.url]))
 
   // Other IDE tabs ask which projects are open; a duplicated tab (same id as
   // an open one) takes its own copy; a fresh tab offers the last closed
@@ -226,7 +255,7 @@ function App() {
   }
 
   const downloadProject = async () => {
-    const blob = await exportProjectZip(project)
+    const blob = await exportProjectZip(project, libraryUrls)
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -239,7 +268,8 @@ function App() {
   // Teilen: the link to a copy of this project, copied with a short
   // confirmation beside the button, or shown to copy by hand.
   const shareProject = async () => {
-    const shareUrl = buildShareUrl(project)
+    const shareUrl = buildShareUrl(project, libraryUrls)
+    setLongLinkLength(shareUrl.length > LONG_LINK ? shareUrl.length : null)
     try {
       await navigator.clipboard.writeText(shareUrl)
       setShareCopied(true)
@@ -253,9 +283,9 @@ function App() {
   // Another project in this tab (opened, imported, or «Neues Projekt»): a new
   // tab project, so the one before stays among «Zuletzt geschlossen» - unless
   // it is the untouched starter, which there is nothing to come back to.
-  const switchTabProject = (nextProject: Project, nextSavedFingerprint: string, entry?: TabEntry) => {
+  const switchTabProject = (nextProject: Project, nextSavedFingerprint: string, entry?: TabEntry, nextLibraries: Record<string, string> = {}) => {
     if (projectFingerprint(project) === STARTER_FINGERPRINT) removeEntry(tabId)
-    const next = entry ?? newTabEntry(nextProject, nextSavedFingerprint)
+    const next = entry ?? newTabEntry(nextProject, nextSavedFingerprint, Date.now(), Object.fromEntries(Object.entries(nextLibraries).map(([path, url]) => [path, { url, status: 'loaded' as const }])))
     if (entry) claimTabId(entry.id)
     changedAtRef.current = next.changedAt
     lastFingerprintRef.current = projectFingerprint(next.project)
@@ -263,7 +293,10 @@ function App() {
     setSavedFingerprint(next.savedFingerprint)
     setProject(next.project)
     setActiveFile(next.project.mainFile)
+    setLibraries(next.libraries ?? {})
     setClosedOffer([])
+    setBrokenLink(false)
+    setLongLinkLength(null)
   }
 
   // A closed project: in this tab if it holds only the untouched starter,
@@ -292,7 +325,7 @@ function App() {
         zipInputRef.current?.click()
         return
       }
-      switchTabProject(importedProject, projectFingerprint(importedProject))
+      switchTabProject(importedProject.project, projectFingerprint(importedProject.project), undefined, importedProject.libraries)
     } catch {
       // Folder picker not supported or cancelled - importProjectFolder already
       // falls back to the hidden zip <input> above when appropriate.
@@ -301,11 +334,13 @@ function App() {
 
   const openZip = async (file: File) => {
     const importedProject = await importProjectZip(file, project)
-    switchTabProject(importedProject, projectFingerprint(importedProject))
+    switchTabProject(importedProject.project, projectFingerprint(importedProject.project), undefined, importedProject.libraries)
   }
 
   const authErrorMessage = authErrorKey === 'init' ? t.authInitError : authErrorKey === 'config' ? t.authConfigError : authErrorKey === 'cancelled' ? t.authCancelledError : ''
   const filePaths = Object.keys(project.files)
+  // The learner's own files; libraries are listed apart in the drawer.
+  const ownPaths = filePaths.filter((path) => !libraries[path])
 
   return (
     <div className="ide">
@@ -350,19 +385,34 @@ function App() {
             <div className="ide-project-row"><strong>{project.name}</strong><button type="button" className="icon-button small" aria-label={t.renameProject} title={t.renameProject} onClick={renameProject}><Pencil size={15} /></button></div>
           </div>
           <ul className="ide-file-list">
-            {filePaths.map((path) => { const file = project.files[path]; return <li key={path} className={path === activeFile ? 'active' : undefined}>
+            {ownPaths.map((path) => { const file = project.files[path]; return <li key={path} className={path === activeFile ? 'active' : undefined}>
               <button type="button" className="ide-file-open" aria-current={path === activeFile ? 'true' : undefined} onClick={() => setActiveFile(path)}>{file.kind === 'python' ? <FileCode2 size={15} /> : <BookOpen size={15} />}<span>{path}</span></button>
               {/* A read-only file (e.g. a course's library) can't be renamed or deleted either. */}
               {file.readOnly ? <span className="ide-file-read-only" role="img" aria-label={t.readOnlyFile} title={t.readOnlyFile}><Lock size={14} /></span> : <>
               <button type="button" className="icon-button small" aria-label={t.renameFile(path)} title={t.renameFile(path)} onClick={() => renameFile(path)}><Pencil size={14} /></button>
-              <button type="button" className="icon-button small ide-file-delete" aria-label={t.deleteFile(path)} title={t.deleteFile(path)} disabled={filePaths.length === 1} onClick={() => deleteFile(path)}><Trash2 size={14} /></button>
+              <button type="button" className="icon-button small ide-file-delete" aria-label={t.deleteFile(path)} title={t.deleteFile(path)} disabled={ownPaths.length === 1} onClick={() => deleteFile(path)}><Trash2 size={14} /></button>
               </>}
             </li> })}
           </ul>
           <button type="button" className="secondary-button ide-new-file" onClick={addFile}><Plus size={15} /> {t.addFile}</button>
+          {/* Libraries by URL (libraries.ts): read-only, with where they come from. */}
+          {Object.keys(libraries).length > 0 && <div className="ide-libraries">
+            <span className="ide-project-label">{t.libraries}</span>
+            <ul className="ide-file-list">
+              {Object.entries(libraries).map(([path, library]) => <li key={path} className={path === activeFile ? 'active' : undefined}>
+                <button type="button" className="ide-file-open" aria-current={path === activeFile ? 'true' : undefined} disabled={library.status !== 'loaded'} onClick={() => setActiveFile(path)}><FileCode2 size={15} /><span className="ide-library-name"><span>{path}</span><small className={library.status === 'failed' ? 'ide-library-failed' : undefined}>{library.status === 'loaded' ? t.librarySource(libraryHost(library.url)) : library.status === 'loading' ? t.libraryLoading : t.libraryFailed(path, library.failure ?? '')}</small></span></button>
+                {library.status === 'failed'
+                  ? <button type="button" className="icon-button small" aria-label={t.retryLibrary(path)} title={t.retryLibrary(path)} onClick={() => retryLibrary(path)}><RotateCcw size={14} /></button>
+                  : <span className="ide-file-read-only" role="img" aria-label={t.readOnlyFile} title={t.readOnlyFile}><Lock size={14} /></span>}
+              </li>)}
+            </ul>
+          </div>}
         </aside>}
         <main className="ide-main">
           {authErrorMessage && <div className="auth-notice" role="status">{authErrorMessage}</div>}
+          {brokenLink && <div className="ide-notice ide-notice--warning" role="alert"><span>{t.brokenLink}</span><button type="button" className="icon-button small" aria-label={t.dismiss} title={t.dismiss} onClick={() => setBrokenLink(false)}><X size={15} /></button></div>}
+          {Object.entries(libraries).filter(([, library]) => library.status === 'failed').map(([path, library]) => <div key={path} className="ide-notice ide-notice--warning" role="status"><span>{t.libraryFailed(path, library.failure ?? '')}</span><button type="button" className="secondary-button" onClick={() => retryLibrary(path)}><RotateCcw size={14} /> {t.retry}</button></div>)}
+          {longLinkLength !== null && <div className="ide-notice" role="status"><span>{t.longLink(longLinkLength)}</span><button type="button" className="secondary-button" onClick={() => { void downloadProject() }}><Download size={14} /> {t.downloadForHandIn}</button><button type="button" className="icon-button small" aria-label={t.dismiss} title={t.dismiss} onClick={() => setLongLinkLength(null)}><X size={15} /></button></div>}
           {updateAvailable && <div className="ide-notice" role="status"><span>{t.updateAvailable}</span><button type="button" className="secondary-button" onClick={() => window.location.reload()}><RotateCcw size={14} /> {t.reloadNow}</button></div>}
           {closedOffer.length > 0 && <div className="ide-notice" role="status"><span>{t.lastEdited(closedOffer[0].project.mainFile, timeAgo(closedOffer[0].changedAt, locale, t.justNow))}</span><button type="button" className="secondary-button" onClick={() => openClosedProject(closedOffer[0])}>{t.openClosed}</button>{closedOffer.length > 1 && <button type="button" className="secondary-button" onClick={showClosedProjects}>{t.showAllClosed}</button>}<button type="button" className="icon-button small" aria-label={t.dismiss} title={t.dismiss} onClick={() => setClosedOffer([])}><X size={15} /></button></div>}
           <GlPythonWorkspace
