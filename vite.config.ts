@@ -1,5 +1,20 @@
+import { execSync } from 'node:child_process'
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
+
+// The commit the IDE is built from (GitHub's in the deploy), compiled in and
+// written to dist/version.json: an open tab compares the two and offers to
+// load a newer version (see App.tsx).
+const version = process.env.GITHUB_SHA ?? (() => {
+  try { return execSync('git rev-parse HEAD').toString().trim() } catch { return 'dev' }
+})()
+const versionFile: Plugin = {
+  name: 'glpython-version-file',
+  apply: 'build',
+  generateBundle() {
+    this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version }) })
+  },
+}
 
 // Cross-origin isolation headers are required so the Pyodide worker can use
 // SharedArrayBuffer, which powers the input() dialog bridge.
@@ -13,7 +28,10 @@ const crossOriginIsolationHeaders = {
 // IDE at the organization's root, https://glpython-edu.github.io/, and Vite's
 // default base "/" applies in production too.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), versionFile],
+  define: {
+    __GLPYTHON_IDE_VERSION__: JSON.stringify(version),
+  },
   // glpython-editor's Pyodide worker is loaded via
   // `new Worker(new URL('./pyodide-worker.js', import.meta.url))`, resolved
   // relative to the editor package's own dist/index.js. In dev, Vite's

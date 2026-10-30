@@ -71,19 +71,11 @@ export function buildShareUrl(project: Project): string {
 }
 
 // Reads a shared project out of the current page URL (if present, in the
-// query or, for a long one, the fragment) and strips it from the address bar
-// afterwards, so reloading or re-sharing doesn't keep re-importing the same
-// snapshot.
-export function consumeSharedProjectFromLocation(): Project | null {
+// query or, for a long one, the fragment). The tab then holds it as its own
+// project and leaves the bare start page in the address (claimTabId), so
+// reloading or re-sharing doesn't keep re-importing the same snapshot.
+export function readSharedProjectFromLocation(): Project | null {
   const url = new URL(window.location.href)
-  const fragment = new URLSearchParams(url.hash.slice(1))
-  const encoded = url.searchParams.get(SHARE_PARAM) ?? fragment.get(SHARE_PARAM)
-  if (!encoded) return null
-
-  const project = decodeProjectFromUrl(encoded)
-  url.searchParams.delete(SHARE_PARAM)
-  fragment.delete(SHARE_PARAM)
-  url.hash = fragment.toString()
-  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
-  return project
+  const encoded = url.searchParams.get(SHARE_PARAM) ?? new URLSearchParams(url.hash.slice(1)).get(SHARE_PARAM)
+  return encoded ? decodeProjectFromUrl(encoded) : null
 }
