@@ -6,8 +6,12 @@ import type { Project, ProjectFile } from 'glpython-editor'
 // e.g. a course's library), the same idea as webTigerPython's
 // `?code=` parameter but extended to a full multi-file project instead of a
 // single source string.
+//
+// Version 2 (P25) adds libraries by URL: `{path, url, readOnly: true}`
+// without the code, which the IDE fetches when the link opens - so a link
+// with a course's parser stays short. A link without libraries stays
+// version 1, which every IDE reads.
 const SHARE_PARAM = 'project'
-const SCHEMA_VERSION = 1
 // GitHub Pages answers "414 URI Too Long" when a request's path and query
 // exceed 8192 characters - a program of roughly 5,000 to 30,000 characters,
 // depending on how well it compresses. A longer link carries the project in
@@ -16,12 +20,22 @@ const SCHEMA_VERSION = 1
 // the same way.
 const MAX_PATH_AND_QUERY = 8192
 
+type LibraryReference = { path: string; url: string; readOnly?: boolean; label?: string; kind?: string }
+
 type SharedProjectPayload = {
   v: number
   name: string
   mainFile: string
-  files: Record<string, ProjectFile>
+  files: Record<string, ProjectFile | LibraryReference>
 }
+
+// What the address brings: no link, one that can't be read (cut off, e.g.
+// by OneNote at 2,083 characters, or damaged), or a project with the URLs
+// of its libraries.
+export type SharedLink =
+  | { status: 'none' }
+  | { status: 'broken' }
+  | { status: 'ok'; project: Project; libraries: Record<string, string> }
 
 function isProjectFile(value: unknown): value is ProjectFile {
   if (!value || typeof value !== 'object') return false
@@ -30,39 +44,54 @@ function isProjectFile(value: unknown): value is ProjectFile {
     && (file.readOnly === undefined || typeof file.readOnly === 'boolean')
 }
 
+function isLibraryReference(value: unknown): value is LibraryReference {
+  if (!value || typeof value !== 'object') return false
+  const library = value as Partial<LibraryReference> & { code?: unknown }
+  return typeof library.path === 'string' && typeof library.url === 'string' && library.code === undefined
+}
+
 function isSharedProjectPayload(value: unknown): value is SharedProjectPayload {
   if (!value || typeof value !== 'object') return false
   const payload = value as Partial<SharedProjectPayload>
   if (typeof payload.name !== 'string' || typeof payload.mainFile !== 'string' || !payload.files || typeof payload.files !== 'object') return false
-  return Object.values(payload.files).every(isProjectFile)
+  return Object.values(payload.files).every((file) => isProjectFile(file) || isLibraryReference(file))
 }
 
-export function encodeProjectForUrl(project: Project): string {
-  const payload: SharedProjectPayload = { v: SCHEMA_VERSION, name: project.name, mainFile: project.mainFile, files: project.files }
+// `libraries`: the project's libraries by URL (path → URL); they go into the
+// link as URLs, not as their code.
+export function encodeProjectForUrl(project: Project, libraries: Record<string, string> = {}): string {
+  const files: Record<string, ProjectFile | LibraryReference> = {}
+  for (const [path, file] of Object.entries(project.files)) if (!libraries[path]) files[path] = file
+  for (const [path, url] of Object.entries(libraries)) files[path] = { path, url, readOnly: true }
+  const payload: SharedProjectPayload = { v: Object.keys(libraries).length > 0 ? 2 : 1, name: project.name, mainFile: project.mainFile, files }
   return compressToEncodedURIComponent(JSON.stringify(payload))
 }
 
-export function decodeProjectFromUrl(encoded: string): Project | null {
+export function decodeProjectFromUrl(encoded: string): SharedLink {
   try {
     const json = decompressFromEncodedURIComponent(encoded)
-    if (!json) return null
+    if (!json) return { status: 'broken' }
     const payload = JSON.parse(json) as unknown
-    if (!isSharedProjectPayload(payload) || !payload.files[payload.mainFile]) return null
-
+    if (!isSharedProjectPayload(payload) || !isProjectFile(payload.files[payload.mainFile])) return { status: 'broken' }
+    const files: Record<string, ProjectFile> = {}
+    const libraries: Record<string, string> = {}
+    for (const [path, file] of Object.entries(payload.files)) {
+      if (isProjectFile(file)) files[path] = file
+      else libraries[path] = file.url
+    }
     return {
-      id: `shared-${Date.now()}`,
-      name: payload.name.trim() || 'Shared project',
-      mainFile: payload.mainFile,
-      files: payload.files,
+      status: 'ok',
+      project: { id: `shared-${Date.now()}`, name: payload.name.trim() || 'Shared project', mainFile: payload.mainFile, files },
+      libraries,
     }
   } catch {
-    return null
+    return { status: 'broken' }
   }
 }
 
-export function buildShareUrl(project: Project): string {
+export function buildShareUrl(project: Project, libraries: Record<string, string> = {}): string {
   const url = new URL(import.meta.env.BASE_URL, window.location.origin)
-  const encoded = encodeProjectForUrl(project)
+  const encoded = encodeProjectForUrl(project, libraries)
   url.searchParams.set(SHARE_PARAM, encoded)
   if (url.pathname.length + url.search.length <= MAX_PATH_AND_QUERY) return url.toString()
   url.search = ''
@@ -74,8 +103,8 @@ export function buildShareUrl(project: Project): string {
 // query or, for a long one, the fragment). The tab then holds it as its own
 // project and leaves the bare start page in the address (claimTabId), so
 // reloading or re-sharing doesn't keep re-importing the same snapshot.
-export function readSharedProjectFromLocation(): Project | null {
+export function readSharedLinkFromLocation(): SharedLink {
   const url = new URL(window.location.href)
   const encoded = url.searchParams.get(SHARE_PARAM) ?? new URLSearchParams(url.hash.slice(1)).get(SHARE_PARAM)
-  return encoded ? decodeProjectFromUrl(encoded) : null
+  return encoded ? decodeProjectFromUrl(encoded) : { status: 'none' }
 }
