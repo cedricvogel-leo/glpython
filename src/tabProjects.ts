@@ -1,4 +1,6 @@
 import type { Project } from 'glpython-editor'
+import type { LibraryState } from './libraries'
+import type { SharedLink } from './projectShare'
 
 // Per-tab projects (P25), as in WebTigerPython: each browser tab has its own
 // project. Opening a share link never replaces another tab's work, and
@@ -29,11 +31,15 @@ export type TabEntry = {
   savedFingerprint: string
   // The last change to the project.
   changedAt: number
+  // Its libraries by URL (path → state), see libraries.ts.
+  libraries?: Record<string, LibraryState>
 }
 
-// Changes of a project's content (name, files, file to run), as a short hash.
+// Changes of a project's content (name, the learner's files, file to run), as
+// a short hash. Read-only files (a course's libraries) aren't the learner's
+// work: a library arriving after its fetch is no change.
 export function projectFingerprint(project: Project): string {
-  const text = JSON.stringify([project.name, project.mainFile, Object.values(project.files).map((file) => [file.path, file.kind, file.code, file.readOnly === true])])
+  const text = JSON.stringify([project.name, project.mainFile, Object.values(project.files).filter((file) => !file.readOnly).map((file) => [file.path, file.kind, file.code])])
   let hash = 0x811c9dc5
   for (let index = 0; index < text.length; index++) {
     hash ^= text.charCodeAt(index)
@@ -117,40 +123,45 @@ export function claimTabId(id: string): void {
 }
 
 // The project this tab starts with: a share link's (always a new tab
-// project), else the one this tab held before (reload, or Safari rebuilding
-// the tab), else - in a tab without one - the IDE's former single project
-// (once) or the starter. `fresh` is true for the starter: only then is
-// another tab's project offered (see recentlyClosed).
-export function startTab(sharedProject: Project | null, starter: Project): { entry: TabEntry; fresh: boolean } {
+// project, its libraries still to fetch), else the one this tab held before
+// (reload, or Safari rebuilding the tab), else - in a tab without one - the
+// IDE's former single project (once) or the starter. `fresh` is true for the
+// starter: only then is another tab's project offered (see recentlyClosed).
+// A link that can't be read gives `empty` and `broken`: never another project.
+export function startTab(link: SharedLink, starter: Project, empty: Project): { entry: TabEntry; fresh: boolean; broken: boolean } {
   const restoreId = new URLSearchParams(window.location.search).get('restore')
-  if (sharedProject) return { entry: newTabEntry(sharedProject, projectFingerprint(sharedProject)), fresh: false }
+  if (link.status === 'broken') return { entry: newTabEntry(empty, projectFingerprint(empty)), fresh: false, broken: true }
+  if (link.status === 'ok') {
+    const libraries = Object.fromEntries(Object.entries(link.libraries).map(([path, url]) => [path, { url, status: 'loading' as const }]))
+    return { entry: newTabEntry(link.project, projectFingerprint(link.project), Date.now(), libraries), fresh: false, broken: false }
+  }
   // «Öffnen» in «Zuletzt geschlossen» opens a closed project in a new tab.
   const restored = restoreId ? loadEntry(restoreId) : null
   if (restored) {
     claimTabId(restored.id)
-    return { entry: restored, fresh: false }
+    return { entry: restored, fresh: false, broken: false }
   }
   const ownId = readTabId()
   const own = ownId ? loadEntry(ownId) : null
   if (own) {
     claimTabId(own.id)
-    return { entry: own, fresh: false }
+    return { entry: own, fresh: false, broken: false }
   }
   const legacy = readJson<Project>(localStorage, LEGACY_KEY)
   if (legacy && legacy.files) {
     // Counts as unsaved: it was never shared from a tab.
     const entry = newTabEntry(legacy, '')
     try { localStorage.removeItem(LEGACY_KEY) } catch { /* storage unavailable */ }
-    return { entry, fresh: false }
+    return { entry, fresh: false, broken: false }
   }
-  return { entry: newStarterEntry(starter), fresh: true }
+  return { entry: newStarterEntry(starter), fresh: true, broken: false }
 }
 
 // A new tab project, held by this tab: the starter, an imported project, or
 // a copy (a duplicated tab gets its own). The one this tab held before stays
 // as it is, among «Zuletzt geschlossen».
-export function newTabEntry(project: Project, savedFingerprint: string, changedAt = Date.now()): TabEntry {
-  const entry = { id: newTabId(), project, savedFingerprint, changedAt }
+export function newTabEntry(project: Project, savedFingerprint: string, changedAt = Date.now(), libraries: Record<string, LibraryState> = {}): TabEntry {
+  const entry = { id: newTabId(), project, savedFingerprint, changedAt, libraries }
   saveEntry(entry)
   claimTabId(entry.id)
   return entry

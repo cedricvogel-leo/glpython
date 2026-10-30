@@ -38,6 +38,20 @@ type ShellStrings = {
   showAllClosed: string
   lastEdited: (file: string, when: string) => string
   justNow: string
+  emptyProjectName: string
+  brokenLink: string
+  longLink: (length: number) => string
+  downloadForHandIn: string
+  libraries: string
+  librarySource: (host: string) => string
+  libraryLoading: string
+  libraryFailed: (name: string, reason: string) => string
+  networkError: string
+  timeout: string
+  libraryTooLarge: string
+  libraryNotHttps: string
+  retry: string
+  retryLibrary: (name: string) => string
   dismiss: string
   updateAvailable: string
   reloadNow: string
@@ -84,6 +98,20 @@ export const translations: Record<Locale, Translation> = {
     showAllClosed: 'Show all',
     lastEdited: (file, when) => `Last edited: ${file} (${when}).`,
     justNow: 'just now',
+    emptyProjectName: 'Empty project',
+    brokenLink: 'This link is incomplete or damaged. It may have been shortened when it was copied.',
+    longLink: (length) => `This link is very long (${length} characters). Some programs, e.g. OneNote, shorten such links. For a hand-in, download the project instead.`,
+    downloadForHandIn: 'Download',
+    libraries: 'Libraries',
+    librarySource: (host) => `from ${host}`,
+    libraryLoading: 'loading …',
+    libraryFailed: (name, reason) => `Could not load library ${name} (${reason}).`,
+    networkError: 'network error',
+    timeout: 'timeout',
+    libraryTooLarge: 'larger than 1 MB',
+    libraryNotHttps: 'not an https address',
+    retry: 'Try again',
+    retryLibrary: (name) => `Load ${name} again`,
     dismiss: 'Close',
     updateAvailable: 'A new version is available.',
     reloadNow: 'Reload',
@@ -126,6 +154,20 @@ export const translations: Record<Locale, Translation> = {
     showAllClosed: 'Alle anzeigen',
     lastEdited: (file, when) => `Zuletzt bearbeitet: ${file} (${when}).`,
     justNow: 'gerade eben',
+    emptyProjectName: 'Leeres Projekt',
+    brokenLink: 'Dieser Link ist unvollständig oder beschädigt. Möglicherweise wurde er beim Kopieren gekürzt.',
+    longLink: (length) => `Dieser Link ist sehr lang (${length} Zeichen). Manche Programme, z. B. OneNote, kürzen solche Links. Für eine Abgabe das Projekt besser herunterladen.`,
+    downloadForHandIn: 'Herunterladen',
+    libraries: 'Bibliotheken',
+    librarySource: (host) => `von ${host}`,
+    libraryLoading: 'wird geladen …',
+    libraryFailed: (name, reason) => `Die Bibliothek ${name} konnte nicht geladen werden (${reason}).`,
+    networkError: 'Netzwerkfehler',
+    timeout: 'Zeitüberschreitung',
+    libraryTooLarge: 'grösser als 1 MB',
+    libraryNotHttps: 'keine https-Adresse',
+    retry: 'Erneut versuchen',
+    retryLibrary: (name) => `${name} erneut laden`,
     dismiss: 'Schliessen',
     updateAvailable: 'Neue Version verfügbar.',
     reloadNow: 'Neu laden',
